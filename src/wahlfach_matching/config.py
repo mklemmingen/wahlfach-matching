@@ -37,3 +37,7 @@ class MatchConfig:
     nice_to_have_subjects: list[str] = field(default_factory=list)
     max_combinations: int = 5
     max_electives: int = 6
+
+    # Cache
+    use_cache: bool = True
+    cache_ttl_hours: int = 24

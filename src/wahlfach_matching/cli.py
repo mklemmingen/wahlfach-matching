@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .config import MatchConfig
 from .ics_exporter import export_ics
@@ -101,6 +102,24 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         help="Maximum number of electives in a combination (default: 6)",
     )
 
+    # Cache flags
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable timetable cache, always re-fetch",
+    )
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Clear cached timetable data and exit",
+    )
+    parser.add_argument(
+        "--cache-ttl",
+        type=int,
+        default=24,
+        help="Cache time-to-live in hours (default: 24)",
+    )
+
     args = parser.parse_args(argv)
     return MatchConfig(
         programs=args.programs,
@@ -116,6 +135,8 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         nice_to_have_subjects=args.nice_to_have or [],
         max_combinations=args.max_combinations,
         max_electives=args.max_electives,
+        use_cache=not args.no_cache,
+        cache_ttl_hours=args.cache_ttl,
     )
 
 
@@ -139,17 +160,54 @@ def _run_classic(config: MatchConfig, save_json: bool) -> int:
     return 0
 
 
+def _fetch_with_cache(config: MatchConfig) -> dict[str, "Subject"]:
+    """Fetch timetable data, using the cache when enabled."""
+    from .aggregator import aggregate_subjects
+    from .cache import SubjectCache
+    from .fetcher import fetch_timetables
+
+    if config.use_cache:
+        cache = SubjectCache(
+            cache_dir=str(Path(config.output_dir) / ".cache"),
+            ttl_hours=config.cache_ttl_hours,
+        )
+        cached = cache.load(config)
+        if cached is not None:
+            print("Loaded timetable data from cache.")
+            return cached
+
+    print("\nFetching timetable data...")
+    timetables = fetch_timetables(config)
+    if not timetables:
+        raise RuntimeError("No timetable data fetched.")
+
+    subjects = aggregate_subjects(timetables)
+
+    if config.use_cache:
+        cache.save(config, subjects)
+        print("Timetable data cached.")
+
+    return subjects
+
+
 def _run_combination_batch(config: MatchConfig, save_json: bool) -> int:
     """Run combination matching in batch mode (--must-have / --nice-to-have)."""
     from .combination_reporter import print_combination_report, save_combination_json
     from .ics_exporter import export_combination_ics
-    from .matcher import run_combination_matching
 
     try:
-        subjects, combinations = run_combination_matching(config)
+        subjects = _fetch_with_cache(config)
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+    print(f"\nFound {len(subjects)} unique subjects.\n")
+
+    # Identify mandatory subjects and run optimizer
+    from .optimizer import find_best_combinations
+
+    mandatory = {code: subjects[code] for code in config.mandatory_subjects if code in subjects}
+    combinations = find_best_combinations(subjects, mandatory, config)
 
     print_combination_report(combinations, config)
 
@@ -164,11 +222,14 @@ def _run_combination_batch(config: MatchConfig, save_json: bool) -> int:
 
 
 def _run_interactive(config: MatchConfig, save_json: bool) -> int:
-    """Run interactive mode with terminal prompts."""
+    """Run interactive mode with terminal prompts and retry loop."""
     try:
         from .interactive import (
             categorize_subjects,
             confirm_and_configure,
+            select_action_after_results,
+            select_combinations_to_export,
+            select_export_formats,
             select_programs,
             select_semesters,
         )
@@ -180,12 +241,13 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
         )
         return 1
 
-    from .aggregator import aggregate_subjects
-    from .combination_reporter import print_combination_report, save_combination_json
-    from .fetcher import fetch_timetables
-    from .ics_exporter import export_combination_ics
-    from .matcher import run_combination_matching
-    from .models import Subject
+    from .combination_reporter import (
+        print_combination_report,
+        save_combination_json,
+        save_selected_combination_json,
+    )
+    from .ics_exporter import export_combination_ics, export_selected_combination_ics
+    from .optimizer import find_best_combinations
 
     # Step 1: Select programs and semesters interactively
     programs = select_programs()
@@ -200,49 +262,63 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
         return 0
     config.semesters = semesters
 
-    # Step 2: Fetch and aggregate
-    print("\nFetching timetable data...")
+    # Step 2: Fetch and aggregate (with cache)
     try:
-        timetables = fetch_timetables(config)
-        if not timetables:
-            raise RuntimeError("No timetable data fetched.")
+        subjects = _fetch_with_cache(config)
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    subjects = aggregate_subjects(timetables)
     print(f"\nFound {len(subjects)} unique subjects.\n")
 
-    # Step 3: Categorize subjects
+    mandatory = {code: subjects[code] for code in config.mandatory_subjects if code in subjects}
     subject_list = sorted(subjects.values(), key=lambda s: s.code)
-    must_have_codes, nice_to_have_codes = categorize_subjects(subject_list)
 
-    # Step 4: Confirm and configure
-    result = confirm_and_configure(must_have_codes, nice_to_have_codes)
-    if not result["confirmed"]:
-        print("Cancelled.")
-        return 0
+    # Interactive loop: categorize -> optimize -> show -> action
+    while True:
+        # Step 3: Categorize subjects
+        must_have_codes, nice_to_have_codes = categorize_subjects(subject_list)
 
-    config.must_have_subjects = must_have_codes
-    config.nice_to_have_subjects = nice_to_have_codes
-    config.max_electives = result["max_electives"]
-    config.max_combinations = result["max_combinations"]
+        # Step 4: Confirm and configure
+        result = confirm_and_configure(must_have_codes, nice_to_have_codes)
+        if not result["confirmed"]:
+            print("Cancelled.")
+            return 0
 
-    # Step 5: Run combination matching
-    try:
-        _, combinations = run_combination_matching(config)
-    except RuntimeError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
+        config.must_have_subjects = must_have_codes
+        config.nice_to_have_subjects = nice_to_have_codes
+        config.max_electives = result["max_electives"]
+        config.max_combinations = result["max_combinations"]
 
-    print_combination_report(combinations, config)
+        # Step 5: Run combination matching
+        combinations = find_best_combinations(subjects, mandatory, config)
 
-    if config.export_ics:
-        print("\nExporting combination ICS files...")
-        export_combination_ics(combinations, config)
+        if not combinations:
+            print("No valid combinations found.")
+            continue
 
-    if save_json:
-        save_combination_json(combinations, config)
+        print_combination_report(combinations, config)
+
+        # Step 6: Ask what to do next
+        action = select_action_after_results(combinations)
+
+        if action == "recategorize":
+            print("\n--- Starting over with re-categorization ---\n")
+            continue
+
+        if action == "export":
+            indices = select_combinations_to_export(combinations)
+            formats = select_export_formats()
+
+            if "json" in formats:
+                save_selected_combination_json(combinations, indices, config)
+            if "ics" in formats:
+                print("\nExporting selected combination ICS files...")
+                export_selected_combination_ics(combinations, indices, config)
+            continue
+
+        # action == "exit"
+        break
 
     return 0
 
@@ -253,6 +329,18 @@ def main(argv: list[str] | None = None) -> int:
 
     effective_argv = argv if argv is not None else sys.argv[1:]
     save_json = "--json" in effective_argv
+
+    # Handle --clear-cache before anything else
+    if "--clear-cache" in effective_argv:
+        from .cache import SubjectCache
+
+        cache = SubjectCache(
+            cache_dir=str(Path(config.output_dir) / ".cache"),
+            ttl_hours=config.cache_ttl_hours,
+        )
+        cache.clear()
+        print("Cache cleared.")
+        return 0
 
     if config.interactive:
         return _run_interactive(config, save_json)

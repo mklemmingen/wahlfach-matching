@@ -136,3 +136,68 @@ def save_combination_json(
 
     print(f"Combination JSON saved to {path}")
     return path
+
+
+def save_selected_combination_json(
+    combinations: list[ScheduleCombination],
+    indices: list[int],
+    config: MatchConfig,
+) -> Path:
+    """Save only selected combinations as JSON. indices are 1-based."""
+    out_dir = Path(config.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "selected_combinations.json"
+
+    def _subj_dict(subj: Subject, tier: str) -> dict:
+        return {
+            "code": subj.code,
+            "display_name": subj.display_name,
+            "tier": tier,
+            "weekdays": sorted(subj.weekdays),
+            "time_slots": sorted(subj.time_slots),
+            "occurrences": subj.total_occurrences,
+            "teachers": sorted(subj.teachers),
+        }
+
+    selected = []
+    for idx in indices:
+        if 1 <= idx <= len(combinations):
+            combo = combinations[idx - 1]
+            selected.append({
+                "rank": idx,
+                "score": combo.score,
+                "metrics": {
+                    "closeness": combo.metrics.closeness,
+                    "earliest_start": combo.metrics.earliest_start,
+                    "avg_start": combo.metrics.avg_start,
+                    "latest_end": combo.metrics.latest_end,
+                    "avg_end": combo.metrics.avg_end,
+                    "free_days_per_week": combo.metrics.free_days_per_week,
+                },
+                "subjects": (
+                    [_subj_dict(s, "must") for s in combo.must_have_subjects]
+                    + [_subj_dict(s, "nice") for s in combo.nice_to_have_subjects]
+                    + [_subj_dict(s, "filler") for s in combo.filler_subjects]
+                ),
+                "internal_conflicts": [
+                    {"subject_a": a, "subject_b": b, "description": d}
+                    for a, b, d in combo.internal_conflicts
+                ],
+                "notes": combo.notes,
+            })
+
+    data = {
+        "config": {
+            "programs": config.programs,
+            "semesters": config.semesters,
+            "must_have_subjects": config.must_have_subjects,
+            "nice_to_have_subjects": config.nice_to_have_subjects,
+        },
+        "combinations": selected,
+    }
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    print(f"Selected combinations JSON saved to {path}")
+    return path

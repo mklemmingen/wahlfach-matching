@@ -3,7 +3,7 @@
 from datetime import date, time
 from unittest.mock import MagicMock, patch
 
-from wahlfach_matching.models import Lesson, Subject
+from wahlfach_matching.models import Lesson, ScheduleCombination, Subject, CombinationMetrics
 
 
 def _make_subject(code: str) -> Subject:
@@ -82,3 +82,64 @@ class TestConfirmAndConfigure:
         from wahlfach_matching.interactive import confirm_and_configure
         result = confirm_and_configure(["MATH"], ["ART"])
         assert result["confirmed"] is False
+
+
+def _make_combo(score: float = 42.0) -> ScheduleCombination:
+    subj = _make_subject("MATH")
+    return ScheduleCombination(
+        subjects=[subj],
+        must_have_subjects=[subj],
+        nice_to_have_subjects=[],
+        filler_subjects=[],
+        score=score,
+        metrics=CombinationMetrics(),
+    )
+
+
+class TestSelectActionAfterResults:
+    @patch("wahlfach_matching.interactive.inquirer")
+    def test_returns_recategorize(self, mock_inquirer):
+        mock_inquirer.select.return_value.execute.return_value = "recategorize"
+        from wahlfach_matching.interactive import select_action_after_results
+        result = select_action_after_results([_make_combo()])
+        assert result == "recategorize"
+
+    @patch("wahlfach_matching.interactive.inquirer")
+    def test_returns_export(self, mock_inquirer):
+        mock_inquirer.select.return_value.execute.return_value = "export"
+        from wahlfach_matching.interactive import select_action_after_results
+        result = select_action_after_results([_make_combo()])
+        assert result == "export"
+
+    @patch("wahlfach_matching.interactive.inquirer")
+    def test_returns_exit(self, mock_inquirer):
+        mock_inquirer.select.return_value.execute.return_value = "exit"
+        from wahlfach_matching.interactive import select_action_after_results
+        result = select_action_after_results([_make_combo()])
+        assert result == "exit"
+
+
+class TestSelectCombinationsToExport:
+    @patch("wahlfach_matching.interactive.inquirer")
+    def test_returns_indices(self, mock_inquirer):
+        mock_inquirer.checkbox.return_value.execute.return_value = [1, 3]
+        from wahlfach_matching.interactive import select_combinations_to_export
+        combos = [_make_combo(40), _make_combo(30), _make_combo(20)]
+        result = select_combinations_to_export(combos)
+        assert result == [1, 3]
+
+
+class TestSelectExportFormats:
+    @patch("wahlfach_matching.interactive.inquirer")
+    def test_returns_formats(self, mock_inquirer):
+        mock_inquirer.checkbox.return_value.execute.return_value = ["json", "ics"]
+        from wahlfach_matching.interactive import select_export_formats
+        result = select_export_formats()
+        assert result == ["json", "ics"]
+
+    @patch("wahlfach_matching.interactive.inquirer")
+    def test_returns_single_format(self, mock_inquirer):
+        mock_inquirer.checkbox.return_value.execute.return_value = ["ics"]
+        from wahlfach_matching.interactive import select_export_formats
+        result = select_export_formats()
+        assert result == ["ics"]

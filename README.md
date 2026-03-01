@@ -28,6 +28,8 @@ pip install .
 
 ## Usage
 
+### Classic mode — rank individual electives
+
 ```bash
 # Basic: score all electives for MKIB semesters 4, 6, 7
 wahlfach-matching
@@ -46,27 +48,65 @@ wahlfach-matching --no-ics --json
 
 # Fetch different programs/semesters
 wahlfach-matching --programs MKIB WIB --semesters 4 6
+```
 
-# Custom output directory
-wahlfach-matching --output-dir ./my-results
+### Combination mode — find the best schedule with specific classes together
+
+```bash
+# Find best schedules that always include 3 specific classes
+wahlfach-matching --must-have MATH PHYS ART
+
+# Must-haves + nice-to-haves: MATH and PHYS are required, ART and MUSIC are preferred
+wahlfach-matching --must-have MATH PHYS --nice-to-have ART MUSIC
+
+# Show top 10 combinations with up to 8 electives each
+wahlfach-matching --must-have MATH PHYS ART --max-combinations 10 --max-electives 8
+
+# Combine with JSON export
+wahlfach-matching --must-have MATH PHYS ART --json
+```
+
+### Interactive mode — browse, categorize, and iterate
+
+```bash
+# Launch interactive mode: pick programs, semesters, then categorize subjects
+wahlfach-matching --interactive
+
+# After results are shown, you can:
+#   - Re-categorize subjects and re-run the optimizer
+#   - Export selected combinations as JSON and/or ICS
+#   - Exit
+```
+
+### Cache options
+
+Timetable data is cached locally (default: 24h) to avoid re-fetching on subsequent runs.
+
+```bash
+# Force re-fetch (ignore cache)
+wahlfach-matching --no-cache --must-have MATH PHYS
+
+# Set cache TTL to 48 hours
+wahlfach-matching --cache-ttl 48
+
+# Clear cached data
+wahlfach-matching --clear-cache
 ```
 
 ## How It Works
 
-1. **Fetch** — Retrieves timetable data from WebUntis for the configured programs and semesters
+1. **Fetch** — Retrieves timetable data from WebUntis for the configured programs and semesters (cached locally by default)
 2. **Aggregate** — Groups all periods by subject across all class groups
-3. **Score** — Ranks elective subjects based on:
-   - Schedule conflicts with mandatory subjects
-   - Preferred weekday matches
-   - Total commitment (number of sessions)
-4. **Report** — Prints a ranked list of best-fit electives
-5. **Export** — Generates `.ics` calendar files for top-ranked subjects
+3. **Score / Optimize** — In classic mode, ranks individual electives by conflict score. In combination mode, finds optimal multi-subject schedules considering conflicts, compactness, and free days
+4. **Report** — Prints a ranked list of best-fit electives or schedule combinations
+5. **Export** — Generates `.ics` calendar files and optional JSON reports
 
 ## Output
 
 - Console ranking with scores, conflicts, and schedule details
-- Individual `.ics` files per top-ranked subject (importable into any calendar app)
+- Individual `.ics` files per top-ranked subject or per combination (importable into any calendar app)
 - Optional JSON report (`--json`)
+- Selective export in interactive mode (pick which combinations to export)
 
 ## Options
 
@@ -81,6 +121,14 @@ wahlfach-matching --output-dir ./my-results
 | `--output-dir` | Output directory (default: output/) |
 | `--no-ics` | Skip ICS export |
 | `--json` | Save JSON report |
+| `--interactive` | Run interactive mode with prompts |
+| `--must-have` | Subject codes that must be in every combination |
+| `--nice-to-have` | Subject codes preferred but not required |
+| `--max-combinations` | Number of top combinations to show (default: 5) |
+| `--max-electives` | Max electives per combination (default: 6) |
+| `--no-cache` | Disable timetable cache, always re-fetch |
+| `--clear-cache` | Clear cached timetable data and exit |
+| `--cache-ttl` | Cache time-to-live in hours (default: 24) |
 
 ## License
 

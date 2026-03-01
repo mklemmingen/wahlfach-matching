@@ -113,3 +113,60 @@ def export_combination_ics(
         print(f"  Exported {total_events} events to {path}")
 
     return created
+
+
+def export_selected_combination_ics(
+    combinations: list[ScheduleCombination],
+    indices: list[int],
+    config: MatchConfig,
+) -> list[Path]:
+    """Export only selected combinations as ICS files. indices are 1-based."""
+    out_dir = Path(config.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    created: list[Path] = []
+
+    for idx in indices:
+        if idx < 1 or idx > len(combinations):
+            continue
+        combo = combinations[idx - 1]
+
+        cal = Calendar()
+        cal.add("prodid", "-//WahlfachMatching//wahlfach-matching//EN")
+        cal.add("version", "2.0")
+        cal.add("x-wr-calname", f"Combination {idx}")
+
+        must_codes = {s.code for s in combo.must_have_subjects}
+        nice_codes = {s.code for s in combo.nice_to_have_subjects}
+
+        for subj in combo.subjects:
+            if subj.code in must_codes:
+                tag = "[MUST]"
+            elif subj.code in nice_codes:
+                tag = "[NICE]"
+            else:
+                tag = "[COULD FIT]"
+
+            for lesson in subj.lessons:
+                event = Event()
+                display = subj.display_name if subj.display_name != subj.code else subj.code
+                event.add("summary", f"{tag} {display}")
+                event.add("dtstart", datetime.datetime.combine(lesson.date, lesson.start))
+                event.add("dtend", datetime.datetime.combine(lesson.date, lesson.end))
+                if lesson.room:
+                    event.add("location", lesson.room)
+                description_parts = [f"Subject: {subj.code}", f"Tier: {tag}"]
+                if subj.teachers:
+                    description_parts.append(f"Teachers: {', '.join(sorted(subj.teachers))}")
+                if lesson.group:
+                    description_parts.append(f"Group: {lesson.group}")
+                event.add("description", "\n".join(description_parts))
+                cal.add_component(event)
+
+        path = out_dir / f"combination_{idx}.ics"
+        with open(path, "wb") as f:
+            f.write(cal.to_ical())
+        created.append(path)
+        total_events = sum(len(s.lessons) for s in combo.subjects)
+        print(f"  Exported {total_events} events to {path}")
+
+    return created

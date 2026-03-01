@@ -57,3 +57,22 @@ class TestParseArgs:
         config = parse_args(["--must-have", "MATH"])
         assert config.must_have_subjects == ["MATH"]
         assert config.interactive is False
+
+    def test_cache_defaults(self):
+        config = parse_args([])
+        assert config.use_cache is True
+        assert config.cache_ttl_hours == 24
+
+    def test_no_cache_flag(self):
+        config = parse_args(["--no-cache"])
+        assert config.use_cache is False
+
+    def test_cache_ttl(self):
+        config = parse_args(["--cache-ttl", "48"])
+        assert config.cache_ttl_hours == 48
+
+    def test_clear_cache(self, tmp_path):
+        from wahlfach_matching.cli import main
+
+        result = main(["--clear-cache", "--output-dir", str(tmp_path)])
+        assert result == 0

@@ -103,3 +103,57 @@ def confirm_and_configure(
         "max_combinations": int(max_combinations),
         "confirmed": confirmed,
     }
+
+
+def select_action_after_results(
+    combinations: list,
+) -> str:
+    """Ask what to do after showing results.
+
+    Returns one of: "recategorize", "export", "exit".
+    """
+    choices = [
+        {"name": "Re-categorize subjects", "value": "recategorize"},
+        {"name": "Export selected combinations", "value": "export"},
+        {"name": "Exit", "value": "exit"},
+    ]
+    result = inquirer.select(
+        message="What would you like to do?",
+        choices=choices,
+    ).execute()
+    return result
+
+
+def select_combinations_to_export(
+    combinations: list,
+) -> list[int]:
+    """Let user pick which combinations to export (1-based indices)."""
+    choices = [
+        {
+            "name": f"Combination #{i} (score: {combo.score:.1f})",
+            "value": i,
+        }
+        for i, combo in enumerate(combinations, 1)
+    ]
+    result = inquirer.checkbox(
+        message="Select combinations to export:",
+        choices=choices,
+        validate=lambda r: len(r) > 0,
+        invalid_message="Select at least one combination.",
+    ).execute()
+    return result
+
+
+def select_export_formats() -> list[str]:
+    """Let user pick export formats."""
+    choices = [
+        {"name": "JSON report", "value": "json", "enabled": True},
+        {"name": "ICS calendar files", "value": "ics", "enabled": True},
+    ]
+    result = inquirer.checkbox(
+        message="Select export formats:",
+        choices=choices,
+        validate=lambda r: len(r) > 0,
+        invalid_message="Select at least one format.",
+    ).execute()
+    return result
