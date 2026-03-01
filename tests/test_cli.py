@@ -58,6 +58,14 @@ class TestParseArgs:
         assert config.must_have_subjects == ["MATH"]
         assert config.interactive is False
 
+    def test_exclude_flag(self):
+        config = parse_args(["--exclude", "BORING1", "BORING2"])
+        assert config.excluded_subjects == ["BORING1", "BORING2"]
+
+    def test_exclude_default_empty(self):
+        config = parse_args([])
+        assert config.excluded_subjects == []
+
     def test_cache_defaults(self):
         config = parse_args([])
         assert config.use_cache is True

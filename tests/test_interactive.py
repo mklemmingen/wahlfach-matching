@@ -35,6 +35,24 @@ class TestSelectSemesters:
         assert result == [4, 6]
 
 
+class TestFilterOutSubjects:
+    @patch("wahlfach_matching.interactive.inquirer")
+    def test_returns_excluded(self, mock_inquirer):
+        subjects = [_make_subject("MATH"), _make_subject("ART"), _make_subject("PHYS")]
+        mock_inquirer.checkbox.return_value.execute.return_value = ["ART"]
+        from wahlfach_matching.interactive import filter_out_subjects
+        result = filter_out_subjects(subjects)
+        assert result == ["ART"]
+
+    @patch("wahlfach_matching.interactive.inquirer")
+    def test_returns_empty(self, mock_inquirer):
+        subjects = [_make_subject("MATH")]
+        mock_inquirer.checkbox.return_value.execute.return_value = []
+        from wahlfach_matching.interactive import filter_out_subjects
+        result = filter_out_subjects(subjects)
+        assert result == []
+
+
 class TestCategorizeSubjects:
     @patch("wahlfach_matching.interactive.inquirer")
     def test_two_step_categorization(self, mock_inquirer):

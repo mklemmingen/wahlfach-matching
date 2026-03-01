@@ -35,6 +35,24 @@ def select_semesters() -> list[int]:
     return result
 
 
+def filter_out_subjects(
+    subjects: list[Subject],
+) -> list[str]:
+    """Let the user pick subjects to exclude from all combinations.
+
+    Returns a list of excluded subject codes.
+    """
+    choices = [
+        {"name": f"{s.code:<15s} {s.display_name}", "value": s.code}
+        for s in subjects
+    ]
+    result = inquirer.checkbox(
+        message="Select subjects to EXCLUDE (never used in any combination):",
+        choices=choices,
+    ).execute()
+    return result
+
+
 def categorize_subjects(
     subjects: list[Subject],
 ) -> tuple[list[str], list[str]]:

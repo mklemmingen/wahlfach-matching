@@ -101,6 +101,12 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         default=6,
         help="Maximum number of electives in a combination (default: 6)",
     )
+    parser.add_argument(
+        "--exclude",
+        nargs="*",
+        default=[],
+        help="Subject codes to exclude from all combinations",
+    )
 
     # Cache flags
     parser.add_argument(
@@ -135,6 +141,7 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         nice_to_have_subjects=args.nice_to_have or [],
         max_combinations=args.max_combinations,
         max_electives=args.max_electives,
+        excluded_subjects=args.exclude or [],
         use_cache=not args.no_cache,
         cache_ttl_hours=args.cache_ttl,
     )
@@ -206,8 +213,10 @@ def _run_combination_batch(config: MatchConfig, save_json: bool) -> int:
     # Identify mandatory subjects and run optimizer
     from .optimizer import find_best_combinations
 
-    mandatory = {code: subjects[code] for code in config.mandatory_subjects if code in subjects}
-    combinations = find_best_combinations(subjects, mandatory, config)
+    # Filter excluded subjects
+    available = {k: v for k, v in subjects.items() if k not in config.excluded_subjects}
+    mandatory = {code: available[code] for code in config.mandatory_subjects if code in available}
+    combinations = find_best_combinations(available, mandatory, config)
 
     print_combination_report(combinations, config)
 
@@ -227,6 +236,7 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
         from .interactive import (
             categorize_subjects,
             confirm_and_configure,
+            filter_out_subjects,
             select_action_after_results,
             select_combinations_to_export,
             select_export_formats,
@@ -274,10 +284,17 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
     mandatory = {code: subjects[code] for code in config.mandatory_subjects if code in subjects}
     subject_list = sorted(subjects.values(), key=lambda s: s.code)
 
-    # Interactive loop: categorize -> optimize -> show -> action
+    # Interactive loop: filter -> categorize -> optimize -> show -> action
     while True:
-        # Step 3: Categorize subjects
-        must_have_codes, nice_to_have_codes = categorize_subjects(subject_list)
+        # Step 3a: Filter out unwanted subjects
+        excluded_codes = filter_out_subjects(subject_list)
+        config.excluded_subjects = excluded_codes
+        if excluded_codes:
+            print(f"Excluded {len(excluded_codes)} subject(s).")
+
+        # Step 3b: Categorize remaining subjects
+        available = [s for s in subject_list if s.code not in excluded_codes]
+        must_have_codes, nice_to_have_codes = categorize_subjects(available)
 
         # Step 4: Confirm and configure
         result = confirm_and_configure(must_have_codes, nice_to_have_codes)
@@ -290,8 +307,12 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
         config.max_electives = result["max_electives"]
         config.max_combinations = result["max_combinations"]
 
-        # Step 5: Run combination matching
-        combinations = find_best_combinations(subjects, mandatory, config)
+        # Step 5: Run combination matching (excluding filtered subjects)
+        available_subjects = {
+            code: subj for code, subj in subjects.items()
+            if code not in config.excluded_subjects
+        }
+        combinations = find_best_combinations(available_subjects, mandatory, config)
 
         if not combinations:
             print("No valid combinations found.")

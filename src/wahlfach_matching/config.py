@@ -38,6 +38,9 @@ class MatchConfig:
     max_combinations: int = 5
     max_electives: int = 6
 
+    # Excluded subjects (never used in any combination)
+    excluded_subjects: list[str] = field(default_factory=list)
+
     # Cache
     use_cache: bool = True
     cache_ttl_hours: int = 24
