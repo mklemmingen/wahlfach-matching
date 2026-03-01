@@ -6,14 +6,24 @@ Built on [`hsrt-timetable`](https://pypi.org/project/hsrt-timetable/) and [`webu
 
 ## Installation
 
+Install directly from GitHub using [pipx](https://pipx.pypa.io/) (recommended for CLI tools):
+
 ```bash
-pip install wahlfach-matching
+pipx install git+https://github.com/mklemmingen/wahlfach-matching.git
 ```
 
-Or with [pipx](https://pipx.pypa.io/) for isolated CLI usage:
+Or with pip:
 
 ```bash
-pipx install wahlfach-matching
+pip install git+https://github.com/mklemmingen/wahlfach-matching.git
+```
+
+Or clone and install locally:
+
+```bash
+git clone https://github.com/mklemmingen/wahlfach-matching.git
+cd wahlfach-matching
+pip install .
 ```
 
 ## Usage
