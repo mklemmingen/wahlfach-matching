@@ -74,4 +74,4 @@ wahlfach-matching --output-dir ./my-results
 
 ## License
 
-MIT
+Apache-2.0
