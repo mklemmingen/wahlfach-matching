@@ -28,6 +28,18 @@ pip install .
 
 ## Usage
 
+### Interactive mode — browse, categorize, and iterate
+
+```bash
+# Launch interactive mode: pick programs, semesters, then categorize subjects
+wahlfach-matching --interactive
+
+# After results are shown, you can:
+#   - Re-categorize subjects and re-run the optimizer
+#   - Export selected combinations as JSON and/or ICS
+#   - Exit
+```
+
 ### Classic mode — rank individual electives
 
 ```bash
@@ -64,18 +76,6 @@ wahlfach-matching --must-have MATH PHYS ART --max-combinations 10 --max-elective
 
 # Combine with JSON export
 wahlfach-matching --must-have MATH PHYS ART --json
-```
-
-### Interactive mode — browse, categorize, and iterate
-
-```bash
-# Launch interactive mode: pick programs, semesters, then categorize subjects
-wahlfach-matching --interactive
-
-# After results are shown, you can:
-#   - Re-categorize subjects and re-run the optimizer
-#   - Export selected combinations as JSON and/or ICS
-#   - Exit
 ```
 
 ### Cache options
