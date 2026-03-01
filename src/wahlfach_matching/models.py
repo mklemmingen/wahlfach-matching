@@ -57,3 +57,29 @@ class MatchResult:
     conflict_count: int = 0
     conflict_slots: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CombinationMetrics:
+    """Quality-of-life ratings for a schedule combination."""
+    closeness: float = 0.0       # avg gap between consecutive lessons (lower = more compact)
+    earliest_start: str = ""     # earliest lesson start across all days (e.g. "08:00")
+    avg_start: str = ""          # average first-lesson-of-day start time
+    latest_end: str = ""         # latest lesson end across all days
+    avg_end: str = ""            # average last-lesson-of-day end time
+    free_days_per_week: int = 0  # weekdays with zero lessons
+
+
+@dataclass
+class ScheduleCombination:
+    """A candidate schedule: a set of subjects that work together."""
+    subjects: list[Subject]
+    must_have_subjects: list[Subject]
+    nice_to_have_subjects: list[Subject]
+    filler_subjects: list[Subject]  # uncategorized "could fit in here"
+    score: float = 0.0
+    internal_conflicts: list[tuple[str, str, str]] = field(default_factory=list)
+    nice_to_have_count: int = 0
+    filler_count: int = 0
+    metrics: CombinationMetrics = field(default_factory=CombinationMetrics)
+    notes: list[str] = field(default_factory=list)

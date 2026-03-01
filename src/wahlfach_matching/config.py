@@ -30,3 +30,10 @@ class MatchConfig:
     output_dir: str = "output"
     export_ics: bool = True
     top_n: int = 10
+
+    # Interactive / combination mode
+    interactive: bool = False
+    must_have_subjects: list[str] = field(default_factory=list)
+    nice_to_have_subjects: list[str] = field(default_factory=list)
+    max_combinations: int = 5
+    max_electives: int = 6
