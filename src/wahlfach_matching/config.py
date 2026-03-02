@@ -44,3 +44,7 @@ class MatchConfig:
     # Cache
     use_cache: bool = True
     cache_ttl_hours: int = 24
+
+    # Static course management
+    remove_course: str | None = None
+

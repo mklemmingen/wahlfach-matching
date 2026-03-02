@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import time as _time
-from datetime import date, time
+from datetime import date, datetime, time
 from pathlib import Path
 
 from .config import MatchConfig
-from .models import Lesson, Subject
+from .models import Lesson, StaticCourse, Subject, TimeSlot
 
 
 class SubjectCache:
@@ -139,3 +139,115 @@ def _deserialize_subjects(raw: dict) -> dict[str, Subject]:
             lessons=lessons,
         )
     return subjects
+
+
+class StaticCourseCache:
+    """Cache manually-added static courses to disk as JSON."""
+
+    def __init__(self, cache_dir: str = "output/.cache"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_file = self.cache_dir / "static_courses.json"
+
+    def _ensure_dir(self) -> None:
+        """Create cache directory if it doesn't exist."""
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def load_all(self) -> dict[str, StaticCourse]:
+        """Load all static courses from cache. Returns empty dict if cache doesn't exist."""
+        if not self.cache_file.exists():
+            return {}
+
+        with open(self.cache_file, encoding="utf-8") as f:
+            raw = json.load(f)
+
+        return _deserialize_static_courses(raw)
+
+    def load_by_code(self, code: str) -> StaticCourse | None:
+        """Load a single static course by code, or None if not found."""
+        all_courses = self.load_all()
+        return all_courses.get(code)
+
+    def save(self, course: StaticCourse) -> None:
+        """Save a single static course to cache (upsert)."""
+        self._ensure_dir()
+        all_courses = self.load_all()
+        all_courses[course.code] = course
+
+        raw = _serialize_static_courses(all_courses)
+        with open(self.cache_file, "w", encoding="utf-8") as f:
+            json.dump(raw, f, indent=2, ensure_ascii=False)
+
+    def delete(self, code: str) -> bool:
+        """Delete a static course by code. Returns True if deleted, False if not found."""
+        all_courses = self.load_all()
+        if code not in all_courses:
+            return False
+
+        del all_courses[code]
+        if all_courses:
+            raw = _serialize_static_courses(all_courses)
+            with open(self.cache_file, "w", encoding="utf-8") as f:
+                json.dump(raw, f, indent=2, ensure_ascii=False)
+        else:
+            # Remove file if empty
+            if self.cache_file.exists():
+                self.cache_file.unlink()
+        return True
+
+    def list_all(self) -> list[StaticCourse]:
+        """List all static courses, sorted by code."""
+        courses = self.load_all()
+        return sorted(courses.values(), key=lambda c: c.code)
+
+    def clear(self) -> None:
+        """Clear all static courses."""
+        if self.cache_file.exists():
+            self.cache_file.unlink()
+
+
+def _serialize_static_courses(courses: dict[str, StaticCourse]) -> dict:
+    """Convert static courses dict to JSON-safe structure."""
+    result = {}
+    for code, course in courses.items():
+        result[code] = {
+            "code": course.code,
+            "name": course.name,
+            "category": course.category,
+            "semester": course.semester,
+            "notes": course.notes,
+            "created_at": course.created_at.isoformat(),
+            "schedule": [
+                {
+                    "weekday": slot.weekday,
+                    "start": slot.start.strftime("%H:%M"),
+                    "end": slot.end.strftime("%H:%M"),
+                }
+                for slot in course.schedule
+            ],
+        }
+    return result
+
+
+def _deserialize_static_courses(raw: dict) -> dict[str, StaticCourse]:
+    """Reconstruct StaticCourse dicts from JSON data."""
+    courses: dict[str, StaticCourse] = {}
+    for code, data in raw.items():
+        schedule = [
+            TimeSlot(
+                weekday=slot["weekday"],
+                start=time.fromisoformat(slot["start"]),
+                end=time.fromisoformat(slot["end"]),
+            )
+            for slot in data["schedule"]
+        ]
+        courses[code] = StaticCourse(
+            code=data["code"],
+            name=data.get("name", ""),
+            category=data.get("category", "must_have"),
+            semester=data.get("semester"),
+            notes=data.get("notes", ""),
+            created_at=datetime.fromisoformat(data.get("created_at", datetime.now().isoformat())),
+            schedule=schedule,
+        )
+    return courses
+

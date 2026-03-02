@@ -126,6 +126,28 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         help="Cache time-to-live in hours (default: 24)",
     )
 
+    # Static course management
+    parser.add_argument(
+        "--add-course",
+        action="store_true",
+        help="Interactively add a new static course",
+    )
+    parser.add_argument(
+        "--list-courses",
+        action="store_true",
+        help="List all static courses",
+    )
+    parser.add_argument(
+        "--remove-course",
+        metavar="CODE",
+        help="Remove a static course by code",
+    )
+    parser.add_argument(
+        "--manage-courses",
+        action="store_true",
+        help="Interactive menu to manage static courses",
+    )
+
     args = parser.parse_args(argv)
     return MatchConfig(
         programs=args.programs,
@@ -144,6 +166,7 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         excluded_subjects=args.exclude or [],
         use_cache=not args.no_cache,
         cache_ttl_hours=args.cache_ttl,
+        remove_course=args.remove_course,
     )
 
 
@@ -167,39 +190,59 @@ def _run_classic(config: MatchConfig, save_json: bool) -> int:
     return 0
 
 
-def _fetch_with_cache(config: MatchConfig) -> dict[str, "Subject"]:
-    """Fetch timetable data, using the cache when enabled."""
+def _fetch_with_cache(config: MatchConfig, force_refetch: bool = False) -> dict[str, "Subject"]:
+    """Fetch timetable data, using the cache when enabled.
+
+    Parameters
+    ----------
+    force_refetch : bool
+        If True, skip cache and re-fetch. Falls back to cache on failure.
+    """
     from .aggregator import aggregate_subjects
     from .cache import SubjectCache
     from .fetcher import fetch_timetables
 
-    if config.use_cache:
-        cache = SubjectCache(
-            cache_dir=str(Path(config.output_dir) / ".cache"),
-            ttl_hours=config.cache_ttl_hours,
-        )
+    cache = SubjectCache(
+        cache_dir=str(Path(config.output_dir) / ".cache"),
+        ttl_hours=config.cache_ttl_hours,
+    )
+
+    # Try cache first (unless force_refetch or cache disabled)
+    if config.use_cache and not force_refetch:
         cached = cache.load(config)
         if cached is not None:
             print("Loaded timetable data from cache.")
             return cached
 
+    # Fetch fresh data
     print("\nFetching timetable data...")
-    timetables = fetch_timetables(config)
-    if not timetables:
-        raise RuntimeError("No timetable data fetched.")
+    try:
+        timetables = fetch_timetables(config)
+        if not timetables:
+            raise RuntimeError("No timetable data fetched.")
 
-    subjects = aggregate_subjects(timetables)
+        subjects = aggregate_subjects(timetables)
 
-    if config.use_cache:
-        cache.save(config, subjects)
-        print("Timetable data cached.")
+        # Save to cache for next time
+        if config.use_cache:
+            cache.save(config, subjects)
+            print("Timetable data cached.")
 
-    return subjects
+        return subjects
+
+    except Exception as e:
+        # Fallback to cache if fetch fails
+        if config.use_cache:
+            cached = cache.load(config)
+            if cached is not None:
+                print(f"\nFetch failed ({e}). Falling back to cached data.")
+                return cached
+        raise RuntimeError(f"Fetch failed and no cache available: {e}") from e
 
 
 def _run_combination_batch(config: MatchConfig, save_json: bool) -> int:
     """Run combination matching in batch mode (--must-have / --nice-to-have)."""
-    from .combination_reporter import print_combination_report, save_combination_json
+    from .combination_reporter import print_combination_report, save_combination_json, save_combination_md
     from .ics_exporter import export_combination_ics
 
     try:
@@ -220,6 +263,9 @@ def _run_combination_batch(config: MatchConfig, save_json: bool) -> int:
 
     print_combination_report(combinations, config)
 
+    # Always save MD results with UUID
+    save_combination_md(combinations, config)
+
     if config.export_ics:
         print("\nExporting combination ICS files...")
         export_combination_ics(combinations, config)
@@ -234,11 +280,16 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
     """Run interactive mode with terminal prompts and retry loop."""
     try:
         from .interactive import (
+            add_static_course_interactive,
             categorize_subjects,
             confirm_and_configure,
             filter_out_subjects,
+            list_static_courses_interactive,
+            manage_static_courses_interactive,
             select_action_after_results,
+            select_cache_strategy,
             select_combinations_to_export,
+            select_course_to_remove,
             select_export_formats,
             select_programs,
             select_semesters,
@@ -254,10 +305,17 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
     from .combination_reporter import (
         print_combination_report,
         save_combination_json,
+        save_combination_md,
         save_selected_combination_json,
     )
     from .ics_exporter import export_combination_ics, export_selected_combination_ics
     from .optimizer import find_best_combinations
+    from .cache import StaticCourseCache
+
+    # Initialize static course cache
+    static_course_cache = StaticCourseCache(
+        cache_dir=str(Path(config.output_dir) / ".cache")
+    )
 
     # Step 1: Select programs and semesters interactively
     programs = select_programs()
@@ -272,9 +330,64 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
         return 0
     config.semesters = semesters
 
-    # Step 2: Fetch and aggregate (with cache)
+    # Step 1b: Offer static course management
+    existing_courses = static_course_cache.list_all()
+    if existing_courses:
+        from InquirerPy import inquirer
+        manage = inquirer.confirm(
+            message=f"You have {len(existing_courses)} static course(s). Manage them?",
+            default=False,
+        ).execute()
+        if manage:
+            try:
+                while True:
+                    action = manage_static_courses_interactive()
+                    if action == "add":
+                        course = add_static_course_interactive()
+                        static_course_cache.save(course)
+                        print(f"\n✓ Static course '{course.code}' saved.")
+                    elif action == "list":
+                        courses = static_course_cache.list_all()
+                        list_static_courses_interactive(courses)
+                    elif action == "remove":
+                        courses = static_course_cache.list_all()
+                        code = select_course_to_remove(courses)
+                        if code:
+                            static_course_cache.delete(code)
+                            print(f"✓ Removed course '{code}'.")
+                    elif action == "exit":
+                        break
+            except KeyboardInterrupt:
+                print("\nCancelled.")
+                return 0
+    else:
+        from InquirerPy import inquirer
+        add_new = inquirer.confirm(
+            message="Add a static course (e.g., external language course)?",
+            default=False,
+        ).execute()
+        if add_new:
+            try:
+                course = add_static_course_interactive()
+                static_course_cache.save(course)
+                print(f"\n✓ Static course '{course.code}' saved.")
+            except KeyboardInterrupt:
+                print("\nCancelled.")
+                return 0
+
+    # Step 2: Ask about cache and fetch data
+    from .cache import SubjectCache
+
+    subject_cache = SubjectCache(
+        cache_dir=str(Path(config.output_dir) / ".cache"),
+        ttl_hours=config.cache_ttl_hours,
+    )
+    cache_available = subject_cache.load(config) is not None
+    cache_strategy = select_cache_strategy(cache_available)
+    force_refetch = cache_strategy == "refetch"
+
     try:
-        subjects = _fetch_with_cache(config)
+        subjects = _fetch_with_cache(config, force_refetch=force_refetch)
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -320,6 +433,9 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
 
         print_combination_report(combinations, config)
 
+        # Always save results as MD with UUID
+        save_combination_md(combinations, config)
+
         # Step 6: Ask what to do next
         action = select_action_after_results(combinations)
 
@@ -361,6 +477,66 @@ def main(argv: list[str] | None = None) -> int:
         )
         cache.clear()
         print("Cache cleared.")
+        return 0
+
+    # Handle static course management
+    from .cache import StaticCourseCache
+    from .interactive import (
+        add_static_course_interactive,
+        list_static_courses_interactive,
+        manage_static_courses_interactive,
+        select_course_to_remove,
+    )
+
+    course_cache = StaticCourseCache(
+        cache_dir=str(Path(config.output_dir) / ".cache")
+    )
+
+    if "--add-course" in effective_argv:
+        try:
+            course = add_static_course_interactive()
+            course_cache.save(course)
+            print(f"\n✓ Static course '{course.code}' saved.")
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            return 0
+        return 0
+
+    if "--list-courses" in effective_argv:
+        courses = course_cache.list_all()
+        list_static_courses_interactive(courses)
+        return 0
+
+    if "--remove-course" in effective_argv:
+        code = config.remove_course
+        if course_cache.delete(code):
+            print(f"✓ Removed course '{code}'.")
+        else:
+            print(f"Course '{code}' not found.")
+        return 0
+
+    if "--manage-courses" in effective_argv:
+        try:
+            while True:
+                action = manage_static_courses_interactive()
+                if action == "add":
+                    course = add_static_course_interactive()
+                    course_cache.save(course)
+                    print(f"\n✓ Static course '{course.code}' saved.")
+                elif action == "list":
+                    courses = course_cache.list_all()
+                    list_static_courses_interactive(courses)
+                elif action == "remove":
+                    courses = course_cache.list_all()
+                    code = select_course_to_remove(courses)
+                    if code:
+                        course_cache.delete(code)
+                        print(f"✓ Removed course '{code}'.")
+                elif action == "exit":
+                    break
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            return 0
         return 0
 
     if config.interactive:

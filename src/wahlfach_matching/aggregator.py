@@ -14,6 +14,7 @@ def aggregate_subjects(
 ) -> dict[str, Subject]:
     """Aggregate all periods from multiple timetables into unique subjects.
 
+    Deduplicates lessons (same date/time/room) that appear in multiple groups.
     Returns a dict keyed by subject code.
     """
     subjects: dict[str, Subject] = {}
@@ -47,13 +48,24 @@ def aggregate_subjects(
                 for r in period.rooms:
                     subj.rooms.add(r.name)
 
-                subj.lessons.append(Lesson(
+                # Create lesson and check for duplicates before adding
+                new_lesson = Lesson(
                     date=period.date,
                     weekday=period.date.strftime("%A"),
                     start=period.start_time,
                     end=period.end_time,
                     room=", ".join(r.name for r in period.rooms),
                     group=group_name,
-                ))
+                )
+
+                # Only add if this exact lesson doesn't already exist
+                # Dedup by (date, start, end) — same time = same lecture,
+                # regardless of room string differences across groups
+                lesson_key = (new_lesson.date, new_lesson.start, new_lesson.end)
+                existing_keys = {
+                    (l.date, l.start, l.end) for l in subj.lessons
+                }
+                if lesson_key not in existing_keys:
+                    subj.lessons.append(new_lesson)
 
     return dict(sorted(subjects.items()))

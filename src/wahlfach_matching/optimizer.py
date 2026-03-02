@@ -4,13 +4,86 @@ from __future__ import annotations
 
 import heapq
 from collections import defaultdict
-from datetime import time
+from datetime import date, time
 from itertools import combinations
+from pathlib import Path
 
 from .config import MatchConfig
-from .models import CombinationMetrics, Lesson, ScheduleCombination, Subject
+from .models import CombinationMetrics, Lesson, ScheduleCombination, StaticCourse, Subject
 
 ALL_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+
+
+def _static_course_to_subject(course: StaticCourse, start_date: date | None = None, end_date: date | None = None) -> Subject:
+    """Convert a StaticCourse to a Subject for pattern matching.
+
+    Parameters
+    ----------
+    course : StaticCourse
+        The static course to convert
+    start_date : date, optional
+        Start date of the semester (for generating lessons across full duration)
+    end_date : date, optional
+        End date of the semester (for generating lessons across full duration)
+    """
+    lessons = course.to_lessons(start_date=start_date, end_date=end_date)
+    weekdays = {lesson.weekday for lesson in lessons}
+    time_slots = {f"{lesson.start:%H:%M}-{lesson.end:%H:%M}" for lesson in lessons}
+
+    return Subject(
+        code=course.code,
+        long_name=course.name,
+        alternate_name=course.display_name,
+        groups=set(),
+        teachers=set(),
+        rooms=set(),
+        total_occurrences=len(lessons),
+        weekdays=weekdays,
+        time_slots=time_slots,
+        dates={lesson.date.isoformat() for lesson in lessons},
+        lessons=lessons,
+    )
+
+
+def _load_static_courses(config: MatchConfig, subjects: dict[str, Subject]) -> tuple[dict[str, Subject], dict[str, str]]:
+    """Load static courses from cache and convert to Subject objects.
+
+    Uses date range from fetched subjects to span static courses across entire semester.
+
+    Returns
+    -------
+    tuple
+        (converted_subjects_dict, category_mapping_dict)
+        where category_mapping maps course_code -> "must_have" or "nice_to_have"
+    """
+    from .cache import StaticCourseCache
+
+    cache = StaticCourseCache(cache_dir=str(Path(config.output_dir) / ".cache"))
+    static_courses = cache.load_all()
+
+    if not static_courses or not subjects:
+        return {}, {}
+
+    # Find date range from fetched subjects
+    all_dates = set()
+    for subj in subjects.values():
+        for lesson in subj.lessons:
+            all_dates.add(lesson.date)
+
+    if not all_dates:
+        start_date = None
+        end_date = None
+    else:
+        start_date = min(all_dates)
+        end_date = max(all_dates)
+
+    converted = {}
+    category_map = {}
+    for code, course in static_courses.items():
+        converted[code] = _static_course_to_subject(course, start_date=start_date, end_date=end_date)
+        category_map[code] = course.category  # "must_have" or "nice_to_have"
+
+    return converted, category_map
 
 
 def _lessons_conflict(a: Lesson, b: Lesson) -> bool:
@@ -211,25 +284,39 @@ def find_best_combinations(
         User preferences including must_have_subjects, nice_to_have_subjects,
         max_electives, and max_combinations.
     """
+    # Load and merge static courses (with semester date range from fetched subjects)
+    static_subjects, static_categories = _load_static_courses(config, subjects)
+    all_subjects = {**subjects, **static_subjects}
+
+    # Add static courses to must_have/nice_to_have based on their category
+    must_have_with_static = list(config.must_have_subjects)
+    nice_to_have_with_static = list(config.nice_to_have_subjects)
+
+    for code, category in static_categories.items():
+        if category == "must_have" and code not in must_have_with_static:
+            must_have_with_static.append(code)
+        elif category == "nice_to_have" and code not in nice_to_have_with_static:
+            nice_to_have_with_static.append(code)
+
     mandatory_slots = _build_mandatory_slots(mandatory_subjects)
 
     # Resolve must-have and nice-to-have subjects
     must_have: list[Subject] = []
-    for code in config.must_have_subjects:
-        if code in subjects and code not in mandatory_subjects:
-            must_have.append(subjects[code])
+    for code in must_have_with_static:
+        if code in all_subjects and code not in mandatory_subjects:
+            must_have.append(all_subjects[code])
 
     nice_to_have: list[Subject] = []
-    for code in config.nice_to_have_subjects:
-        if code in subjects and code not in mandatory_subjects and code not in config.must_have_subjects:
-            nice_to_have.append(subjects[code])
+    for code in nice_to_have_with_static:
+        if code in all_subjects and code not in mandatory_subjects and code not in must_have_with_static:
+            nice_to_have.append(all_subjects[code])
 
     must_have_codes = {s.code for s in must_have}
     nice_to_have_codes = {s.code for s in nice_to_have}
 
     # Build candidate pool: uncategorized subjects (not mandatory, not must-have, not nice-to-have)
     fillers: list[Subject] = []
-    for code, subj in subjects.items():
+    for code, subj in all_subjects.items():
         if code in mandatory_subjects:
             continue
         if code in must_have_codes or code in nice_to_have_codes:
