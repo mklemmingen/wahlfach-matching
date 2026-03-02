@@ -106,6 +106,7 @@ def _serialize_subjects(subjects: dict[str, Subject]) -> dict:
                 }
                 for lesson in subj.lessons
             ],
+            "exclusion_group": subj.exclusion_group,
         }
     return result
 
@@ -137,6 +138,7 @@ def _deserialize_subjects(raw: dict) -> dict[str, Subject]:
             time_slots=set(data.get("time_slots", [])),
             dates=set(data.get("dates", [])),
             lessons=lessons,
+            exclusion_group=data.get("exclusion_group"),
         )
     return subjects
 
@@ -224,6 +226,7 @@ def _serialize_static_courses(courses: dict[str, StaticCourse]) -> dict:
                 }
                 for slot in course.schedule
             ],
+            "exclusion_group": course.exclusion_group,
             "specific_dates": (
                 [d.isoformat() for d in course.specific_dates]
                 if course.specific_dates is not None
@@ -258,6 +261,7 @@ def _deserialize_static_courses(raw: dict) -> dict[str, StaticCourse]:
             category=data.get("category", "must_have"),
             semester=data.get("semester"),
             notes=data.get("notes", ""),
+            exclusion_group=data.get("exclusion_group"),
             created_at=datetime.fromisoformat(data.get("created_at", datetime.now().isoformat())),
             schedule=schedule,
             specific_dates=specific_dates,

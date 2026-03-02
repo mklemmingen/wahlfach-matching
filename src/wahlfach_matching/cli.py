@@ -111,6 +111,13 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         default=[],
         help="Subject codes to exclude from all combinations",
     )
+    parser.add_argument(
+        "--exclusion-group",
+        action="append",
+        default=[],
+        metavar="NAME:CODE1,CODE2,...",
+        help="Define a mutual-exclusion group (repeatable). Courses in the same group won't appear together.",
+    )
 
     # Cache flags
     parser.add_argument(
@@ -153,6 +160,21 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
     )
 
     args = parser.parse_args(argv)
+
+    # Parse --exclusion-group NAME:CODE1,CODE2,... into dict
+    exclusion_groups: dict[str, list[str]] = {}
+    for raw in (args.exclusion_group or []):
+        if ":" not in raw:
+            parser.error(f"Invalid --exclusion-group format: '{raw}'. Expected NAME:CODE1,CODE2,...")
+        name, codes_str = raw.split(":", 1)
+        codes = [c.strip() for c in codes_str.split(",") if c.strip()]
+        if not name or not codes:
+            parser.error(f"Invalid --exclusion-group: '{raw}'. Need a name and at least one code.")
+        if name in exclusion_groups:
+            exclusion_groups[name].extend(codes)
+        else:
+            exclusion_groups[name] = codes
+
     return MatchConfig(
         programs=args.programs,
         semesters=args.semesters,
@@ -168,6 +190,7 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         max_combinations=args.max_combinations,
         max_electives=args.max_electives,
         excluded_subjects=args.exclude or [],
+        exclusion_groups=exclusion_groups,
         use_cache=not args.no_cache,
         cache_ttl_hours=args.cache_ttl,
         remove_course=args.remove_course,

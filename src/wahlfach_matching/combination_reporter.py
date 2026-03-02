@@ -62,6 +62,12 @@ def print_combination_report(
         filter_grid.add_row("Must-have:", "[green]" + ", ".join(config.must_have_subjects) + "[/green]")
     if config.nice_to_have_subjects:
         filter_grid.add_row("Nice-to-have:", "[blue]" + ", ".join(config.nice_to_have_subjects) + "[/blue]")
+    if config.exclusion_groups:
+        groups_str = ", ".join(
+            f"{name} ({', '.join(codes)})"
+            for name, codes in config.exclusion_groups.items()
+        )
+        filter_grid.add_row("Exclusion groups:", "[magenta]" + groups_str + "[/magenta]")
     console.print(filter_grid)
 
     console.print(f"\nFound [bold]{len(combinations)}[/bold] combination(s)\n")

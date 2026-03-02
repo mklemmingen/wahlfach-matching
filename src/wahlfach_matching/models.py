@@ -32,6 +32,7 @@ class Subject:
     time_slots: set[str] = field(default_factory=set)
     dates: set[str] = field(default_factory=set)
     lessons: list[Lesson] = field(default_factory=list)
+    exclusion_group: str | None = None
 
     @property
     def display_name(self) -> str:
@@ -98,6 +99,7 @@ class StaticCourse:
     specific_dates: list[date] | None = None  # None=weekly, []=no lessons, [dates]=only those dates
     semester: int | None = None  # optional context
     notes: str = ""  # optional notes
+    exclusion_group: str | None = None
     created_at: datetime = field(default_factory=datetime.now)
     is_static: bool = field(default=True, init=False)
 

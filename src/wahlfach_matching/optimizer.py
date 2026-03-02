@@ -49,6 +49,7 @@ def _static_course_to_subject(course: StaticCourse, start_date: date | None = No
         time_slots=time_slots,
         dates={lesson.date.isoformat() for lesson in lessons},
         lessons=lessons,
+        exclusion_group=course.exclusion_group,
     )
 
 
@@ -325,6 +326,44 @@ def _score_combination(
     )
 
 
+def _build_exclusion_index(
+    subjects: dict[str, Subject],
+    config: MatchConfig,
+) -> dict[str, str]:
+    """Build a code → group reverse index from Subject.exclusion_group fields and config.exclusion_groups.
+
+    Returns a dict mapping subject code to its exclusion group name.
+    """
+    code_to_group: dict[str, str] = {}
+
+    # From Subject.exclusion_group fields
+    for subj in subjects.values():
+        if subj.exclusion_group:
+            code_to_group[subj.code] = subj.exclusion_group
+
+    # From config.exclusion_groups (CLI-defined)
+    for group_name, codes in config.exclusion_groups.items():
+        for code in codes:
+            code_to_group[code] = group_name
+
+    return code_to_group
+
+
+def _violates_exclusion_groups(
+    subset: tuple[Subject, ...],
+    code_to_group: dict[str, str],
+) -> bool:
+    """Return True if 2+ subjects in the subset share an exclusion group."""
+    seen: set[str] = set()
+    for s in subset:
+        grp = code_to_group.get(s.code)
+        if grp:
+            if grp in seen:
+                return True
+            seen.add(grp)
+    return False
+
+
 def find_best_combinations(
     subjects: dict[str, Subject],
     mandatory_subjects: dict[str, Subject],
@@ -384,6 +423,21 @@ def find_best_combinations(
         console.print(static_table)
         console.print()
 
+    # ── Phase 1b: Build exclusion index ────────────────────────────────────
+    code_to_group = _build_exclusion_index(all_subjects, config)
+
+    if code_to_group:
+        # Collect unique groups for display
+        groups_seen: dict[str, list[str]] = {}
+        for code, grp in code_to_group.items():
+            groups_seen.setdefault(grp, []).append(code)
+
+        excl_info = Text()
+        excl_info.append("  Exclusion groups: ", style="dim")
+        parts = [f"{name} ({len(codes)} courses)" for name, codes in groups_seen.items()]
+        excl_info.append(", ".join(parts), style="bold magenta")
+        console.print(excl_info)
+
     # ── Phase 2: Resolve categories ───────────────────────────────────────
     must_have_with_static = list(config.must_have_subjects)
     nice_to_have_with_static = list(config.nice_to_have_subjects)
@@ -409,12 +463,46 @@ def find_best_combinations(
     must_have_codes = {s.code for s in must_have}
     nice_to_have_codes = {s.code for s in nice_to_have}
 
+    # ── Phase 2b: Validate exclusion groups ──────────────────────────────
+    if code_to_group:
+        # Check: 2+ must-haves in the same group → impossible
+        must_have_groups: dict[str, list[str]] = {}
+        for s in must_have:
+            grp = code_to_group.get(s.code)
+            if grp:
+                must_have_groups.setdefault(grp, []).append(s.code)
+        for grp, codes in must_have_groups.items():
+            if len(codes) > 1:
+                console.print(
+                    f"[bold red]Error: Must-have subjects {codes} are in the same "
+                    f"exclusion group '{grp}'. No valid combinations possible.[/bold red]"
+                )
+                return []
+
+        # Prune: if a must-have is in a group, remove siblings from nice-to-have and filler pools
+        must_have_group_names = set(must_have_groups.keys())
+        nice_to_have = [
+            s for s in nice_to_have
+            if code_to_group.get(s.code) not in must_have_group_names
+        ]
+        nice_to_have_codes = {s.code for s in nice_to_have}
+
     # Build candidate pool
     fillers: list[Subject] = []
+    must_have_group_names = set()
+    if code_to_group:
+        for s in must_have:
+            grp = code_to_group.get(s.code)
+            if grp:
+                must_have_group_names.add(grp)
+
     for code, subj in all_subjects.items():
         if code in mandatory_subjects:
             continue
         if code in must_have_codes or code in nice_to_have_codes:
+            continue
+        # Prune fillers whose group conflicts with a must-have
+        if code_to_group and code_to_group.get(code) in must_have_group_names:
             continue
         fillers.append(subj)
 
@@ -507,6 +595,17 @@ def find_best_combinations(
 
         for size in range(0, max_pool + 1):
             for subset in combinations(candidate_pool, size):
+                # Skip subsets that violate exclusion groups (hard constraint)
+                if code_to_group and _violates_exclusion_groups(subset, code_to_group):
+                    counter += 1
+                    if counter % 500 == 0:
+                        progress.update(
+                            task,
+                            completed=counter,
+                            info=f"best: {best_score:.1f}  conflict-free: {conflict_free_count}",
+                        )
+                    continue
+
                 subset_nice = [s for s in subset if s.code in nice_to_have_codes]
                 subset_fillers = [s for s in subset if s.code not in nice_to_have_codes]
 

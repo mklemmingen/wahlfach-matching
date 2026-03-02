@@ -326,6 +326,18 @@ def add_static_course_interactive() -> StaticCourse:
             message="Notes (optional):",
         ).execute().strip()
 
+    # Optional exclusion group
+    exclusion_group: str | None = None
+    if inquirer.confirm(
+        message="Add to a mutual-exclusion group? (courses in same group won't appear together)",
+        default=False,
+    ).execute():
+        exclusion_group = inquirer.text(
+            message="Exclusion group name (e.g., SPANISH1):",
+            validate=lambda x: len(x.strip()) > 0,
+            invalid_message="Group name cannot be empty.",
+        ).execute().strip().upper()
+
     # Create and return the course
     course = StaticCourse(
         code=code,
@@ -335,6 +347,7 @@ def add_static_course_interactive() -> StaticCourse:
         specific_dates=specific_dates,
         semester=semester,
         notes=notes,
+        exclusion_group=exclusion_group,
     )
 
     return course
@@ -354,7 +367,8 @@ def list_static_courses_interactive(courses: list[StaticCourse]) -> None:
             mode_str = f" [{len(course.specific_dates)} specific dates]"
         else:
             mode_str = " [weekly]"
-        print(f"{category_badge:12} | {course.code:<15} | {course.name}{sem_str}{mode_str}")
+        group_str = f" [group: {course.exclusion_group}]" if course.exclusion_group else ""
+        print(f"{category_badge:12} | {course.code:<15} | {course.name}{sem_str}{mode_str}{group_str}")
         for slot in course.schedule:
             print(f"{'':12} | {'':15} | → {slot.weekday} {slot.start:%H:%M}-{slot.end:%H:%M}")
         if course.specific_dates:

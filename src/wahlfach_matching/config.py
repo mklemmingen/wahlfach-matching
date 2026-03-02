@@ -41,6 +41,9 @@ class MatchConfig:
     # Excluded subjects (never used in any combination)
     excluded_subjects: list[str] = field(default_factory=list)
 
+    # Mutual-exclusion groups: group name -> list of subject codes
+    exclusion_groups: dict[str, list[str]] = field(default_factory=dict)
+
     # Cache
     use_cache: bool = True
     cache_ttl_hours: int = 24
