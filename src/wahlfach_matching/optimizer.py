@@ -10,10 +10,7 @@ from itertools import combinations
 from pathlib import Path
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-from rich.table import Table
-from rich.text import Text
 
 from .config import MatchConfig
 from .models import CombinationMetrics, Lesson, ScheduleCombination, StaticCourse, Subject
@@ -389,59 +386,29 @@ def find_best_combinations(
         console = Console(quiet=True)
 
     # ── Phase 1: Load static courses ──────────────────────────────────────
-    with console.status("[bold cyan]Loading static courses...", spinner="dots") as status:
+    with console.status("Loading static courses...", spinner="dots"):
         static_subjects, static_categories = _load_static_courses(config, subjects)
         all_subjects = {**subjects, **static_subjects}
 
     if static_subjects:
-        # Show static course summary
-        static_table = Table(
-            title="[bold]Static Courses Loaded",
-            show_header=True,
-            header_style="bold",
-            border_style="cyan",
-            padding=(0, 1),
-        )
-        static_table.add_column("Code", style="bold yellow")
-        static_table.add_column("Category")
-        static_table.add_column("Mode")
-        static_table.add_column("Lessons", justify="right")
-
+        from .cache import StaticCourseCache
+        sc_cache = StaticCourseCache(cache_dir=str(Path(config.output_dir) / ".cache"))
+        console.print(f"Static courses: {len(static_subjects)}")
         for code, subj in static_subjects.items():
-            cat = static_categories.get(code, "?")
-            if cat == "must_have":
-                cat_style = "[green]must-have"
-            elif cat == "nice_to_have":
-                cat_style = "[blue]nice-to-have"
-            else:
-                cat_style = "[dim]filler"
-            # Determine mode from the original static course
-            from .cache import StaticCourseCache
-            sc_cache = StaticCourseCache(cache_dir=str(Path(config.output_dir) / ".cache"))
+            cat = static_categories.get(code, "filler")
             raw_course = sc_cache.load_by_code(code)
-            if raw_course and raw_course.specific_dates is not None:
-                mode = f"[magenta]{len(raw_course.specific_dates)} dates"
-            else:
-                mode = "[dim]weekly"
-            static_table.add_row(code, cat_style, mode, str(subj.total_occurrences))
-
-        console.print(static_table)
-        console.print()
+            mode = f"{len(raw_course.specific_dates)} dates" if raw_course and raw_course.specific_dates is not None else "weekly"
+            console.print(f"  {code:<20s} {cat:<12s} {mode:<10s} {subj.total_occurrences} lessons")
 
     # ── Phase 1b: Build exclusion index ────────────────────────────────────
     code_to_group = _build_exclusion_index(all_subjects, config)
 
     if code_to_group:
-        # Collect unique groups for display
         groups_seen: dict[str, list[str]] = {}
         for code, grp in code_to_group.items():
             groups_seen.setdefault(grp, []).append(code)
-
-        excl_info = Text()
-        excl_info.append("  Exclusion groups: ", style="dim")
-        parts = [f"{name} ({len(codes)} courses)" for name, codes in groups_seen.items()]
-        excl_info.append(", ".join(parts), style="bold magenta")
-        console.print(excl_info)
+        parts = [f"{name} ({len(codes)})" for name, codes in groups_seen.items()]
+        console.print(f"Exclusion groups: {', '.join(parts)}")
 
     # ── Phase 2: Resolve categories ───────────────────────────────────────
     must_have_with_static = list(config.must_have_subjects)
@@ -479,8 +446,8 @@ def find_best_combinations(
         for grp, codes in must_have_groups.items():
             if len(codes) > 1:
                 console.print(
-                    f"[bold red]Error: Must-have subjects {codes} are in the same "
-                    f"exclusion group '{grp}'. No valid combinations possible.[/bold red]"
+                    f"Error: Must-have subjects {codes} are in the same "
+                    f"exclusion group '{grp}'. No valid combinations possible."
                 )
                 return []
 
@@ -528,21 +495,15 @@ def find_best_combinations(
     pruned_count = initial_filler_count - len(fillers)
 
     # Show pool summary
-    pool_info = Text()
-    pool_info.append("  Must-have:    ", style="dim")
-    pool_info.append(f"{len(must_have)}", style="bold green")
-    pool_info.append("  Nice-to-have: ", style="dim")
-    pool_info.append(f"{len(nice_to_have)}", style="bold blue")
-    pool_info.append("  Candidates:   ", style="dim")
-    pool_info.append(f"{len(fillers)}", style="bold yellow")
+    pool_line = f"Pool: {len(must_have)} must-have, {len(nice_to_have)} nice-to-have, {len(fillers)} filler"
     if pruned_count > 0:
-        pool_info.append(f"  ({pruned_count} pruned)", style="dim red")
-    console.print(pool_info)
+        pool_line += f" ({pruned_count} pruned)"
+    console.print(pool_line)
 
     remaining_slots = config.max_electives - len(must_have)
     if remaining_slots <= 0:
         combo = _score_combination(must_have, [], [], mandatory_slots, config)
-        console.print("[dim]Only must-haves fit. Single combination returned.\n")
+        console.print("Only must-haves fit. Single combination returned.")
         return [combo]
 
     candidate_pool = nice_to_have + fillers
@@ -551,26 +512,13 @@ def find_best_combinations(
     all_scorable = must_have + candidate_pool
     n_pairs = len(all_scorable) * (len(all_scorable) - 1) // 2
 
-    with console.status(
-        f"[bold cyan]Precomputing conflict matrix ({n_pairs} pairs)...",
-        spinner="dots",
-    ):
+    with console.status(f"Precomputing conflict matrix ({n_pairs} pairs)...", spinner="dots"):
         conflict_matrix = _precompute_conflict_matrix(all_scorable)
         mandatory_conflict_cache = _precompute_mandatory_conflicts(all_scorable, mandatory_slots)
 
-    # Count conflict stats from the matrix
-    pairs_with_conflicts = sum(1 for v in conflict_matrix.values() if v)
     total_conflicts_found = sum(len(v) for v in conflict_matrix.values())
-    disjoint_pairs = n_pairs - len(conflict_matrix)  # pairs skipped by quick-reject
-
-    conflict_info = Text()
-    conflict_info.append("  Pairs analyzed: ", style="dim")
-    conflict_info.append(f"{n_pairs}", style="bold")
-    conflict_info.append("  Conflicts found: ", style="dim")
-    conflict_info.append(f"{total_conflicts_found}", style="bold red" if total_conflicts_found else "bold green")
-    conflict_info.append("  Disjoint (fast skip): ", style="dim")
-    conflict_info.append(f"{disjoint_pairs}", style="bold cyan")
-    console.print(conflict_info)
+    disjoint_pairs = n_pairs - len(conflict_matrix)
+    console.print(f"Conflicts: {total_conflicts_found} found in {n_pairs} pairs ({disjoint_pairs} disjoint-skipped)")
 
     # ── Phase 4: Enumerate and score combinations ─────────────────────────
     heap: list[tuple[float, int, ScheduleCombination]] = []
@@ -584,10 +532,10 @@ def find_best_combinations(
 
     with Progress(
         SpinnerColumn(),
-        TextColumn("[bold cyan]{task.description}"),
+        TextColumn("{task.description}"),
         BarColumn(bar_width=30),
         MofNCompleteColumn(),
-        TextColumn("[dim]{task.fields[info]}"),
+        TextColumn("{task.fields[info]}"),
         TimeElapsedColumn(),
         console=console,
         transient=True,
@@ -648,15 +596,10 @@ def find_best_combinations(
     results = [entry[2] for entry in heap]
     results.sort(key=lambda c: -c.score)
 
-    summary = Table.grid(padding=(0, 2))
-    summary.add_column(style="dim")
-    summary.add_column(style="bold")
-    summary.add_row("Combinations evaluated", f"{counter:,}")
-    summary.add_row("Conflict-free", f"{conflict_free_count:,}")
-    summary.add_row("Best score", f"{best_score:.1f}" if best_score > float("-inf") else "N/A")
-    summary.add_row("Returning top", f"{len(results)}")
-
-    console.print(Panel(summary, title="[bold green]Optimization Complete", border_style="green", padding=(0, 2)))
-    console.print()
+    best_str = f"{best_score:.1f}" if best_score > float("-inf") else "N/A"
+    console.print(
+        f"Done: {counter:,} evaluated, {conflict_free_count:,} conflict-free, "
+        f"best={best_str}, returning top {len(results)}"
+    )
 
     return results

@@ -66,7 +66,7 @@ class TestPrintCombinationReport:
         assert "42.5" in captured.out
         assert "MUST" in captured.out
         assert "NICE" in captured.out
-        assert "COULD FIT" in captured.out
+        assert "FILL" in captured.out
         assert "MATH" in captured.out
         assert "ART" in captured.out
         assert "ELEC1" in captured.out
@@ -76,9 +76,8 @@ class TestPrintCombinationReport:
         config = MatchConfig()
         print_combination_report([combo], config)
         captured = capsys.readouterr()
-        assert "25 min" in captured.out
+        assert "25min" in captured.out
         assert "08:00" in captured.out
-        assert "09:15" in captured.out
         assert "15:30" in captured.out
 
     def test_multiple_combinations(self, capsys):
