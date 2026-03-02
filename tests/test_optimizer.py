@@ -92,7 +92,7 @@ class TestComputeMetrics:
 
 
 class TestFindBestCombinations:
-    def test_basic_combinations(self):
+    def test_basic_combinations(self, tmp_path):
         must = _make_subject("MUST", [
             Lesson(date=date(2026, 3, 2), weekday="Monday", start=time(8, 0), end=time(9, 30)),
         ])
@@ -108,6 +108,7 @@ class TestFindBestCombinations:
             nice_to_have_subjects=["NICE"],
             max_electives=3,
             max_combinations=5,
+            output_dir=str(tmp_path),
         )
         combos = find_best_combinations(subjects, {}, config)
         assert len(combos) > 0
@@ -116,7 +117,7 @@ class TestFindBestCombinations:
             must_codes = [s.code for s in combo.must_have_subjects]
             assert "MUST" in must_codes
 
-    def test_respects_max_combinations(self):
+    def test_respects_max_combinations(self, tmp_path):
         subjects = {}
         for i in range(10):
             code = f"SUBJ{i}"
@@ -128,11 +129,12 @@ class TestFindBestCombinations:
             nice_to_have_subjects=["SUBJ0", "SUBJ1"],
             max_electives=4,
             max_combinations=3,
+            output_dir=str(tmp_path),
         )
         combos = find_best_combinations(subjects, {}, config)
         assert len(combos) <= 3
 
-    def test_only_must_haves_when_full(self):
+    def test_only_must_haves_when_full(self, tmp_path):
         subjects = {}
         for i in range(3):
             code = f"M{i}"
@@ -144,12 +146,13 @@ class TestFindBestCombinations:
             must_have_subjects=["M0", "M1", "M2"],
             max_electives=3,  # exactly the must-haves
             max_combinations=5,
+            output_dir=str(tmp_path),
         )
         combos = find_best_combinations(subjects, {}, config)
         assert len(combos) == 1
         assert len(combos[0].subjects) == 3
 
-    def test_excludes_mandatory_from_candidates(self):
+    def test_excludes_mandatory_from_candidates(self, tmp_path):
         mandatory = _make_subject("MAND", [
             Lesson(date=date(2026, 3, 2), weekday="Monday", start=time(8, 0), end=time(9, 30)),
         ])
@@ -161,13 +164,14 @@ class TestFindBestCombinations:
             nice_to_have_subjects=["NICE"],
             max_electives=3,
             max_combinations=5,
+            output_dir=str(tmp_path),
         )
         combos = find_best_combinations(subjects, {"MAND": mandatory}, config)
         for combo in combos:
             codes = [s.code for s in combo.subjects]
             assert "MAND" not in codes
 
-    def test_conflict_penalty(self):
+    def test_conflict_penalty(self, tmp_path):
         # Two subjects at the same time should score lower than two non-conflicting
         a = _make_subject("A", [
             Lesson(date=date(2026, 3, 2), weekday="Monday", start=time(8, 0), end=time(9, 30)),
@@ -183,6 +187,7 @@ class TestFindBestCombinations:
             nice_to_have_subjects=["A", "B", "C"],
             max_electives=2,
             max_combinations=10,
+            output_dir=str(tmp_path),
         )
         combos = find_best_combinations(subjects, {}, config)
         # The combination {A, C} should rank higher than {A, B} due to conflict penalty

@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import heapq
+import math
 from collections import defaultdict
 from datetime import date, time
 from itertools import combinations
 from pathlib import Path
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.table import Table
+from rich.text import Text
 
 from .config import MatchConfig
 from .models import CombinationMetrics, Lesson, ScheduleCombination, StaticCourse, Subject
@@ -94,11 +101,29 @@ def _lessons_conflict(a: Lesson, b: Lesson) -> bool:
 
 
 def _subjects_conflict(a: Subject, b: Subject) -> list[str]:
-    """Return conflict descriptions between two subjects."""
+    """Return conflict descriptions between two subjects.
+
+    Uses date-indexed lookup for O(n+m) instead of O(n*m).
+    """
+    # Quick-reject: if both subjects have date info and share no dates, they can't conflict
+    if a.dates and b.dates and a.dates.isdisjoint(b.dates):
+        return []
+
+    # Build date-indexed lookup for the smaller subject
+    if len(a.lessons) <= len(b.lessons):
+        indexed, other, indexed_is_a = a, b, True
+    else:
+        indexed, other, indexed_is_a = b, a, False
+
+    by_date: dict[date, list[Lesson]] = {}
+    for le in indexed.lessons:
+        by_date.setdefault(le.date, []).append(le)
+
     conflicts: list[str] = []
-    for la in a.lessons:
-        for lb in b.lessons:
-            if _lessons_conflict(la, lb):
+    for lo in other.lessons:
+        for li in by_date.get(lo.date, []):
+            if li.start < lo.end and lo.start < li.end:
+                la, lb = (li, lo) if indexed_is_a else (lo, li)
                 desc = (
                     f"{a.code} vs {b.code} on {la.date.isoformat()} "
                     f"{la.start:%H:%M}-{la.end:%H:%M}"
@@ -200,12 +225,37 @@ def _count_mandatory_conflicts(
     return count
 
 
+def _precompute_conflict_matrix(
+    subjects: list[Subject],
+) -> dict[tuple[str, str], list[str]]:
+    """Pre-compute pairwise conflict descriptions for all subject pairs.
+
+    Returns a dict mapping ``(code_a, code_b)`` (sorted) to conflict descriptions.
+    """
+    matrix: dict[tuple[str, str], list[str]] = {}
+    for i, a in enumerate(subjects):
+        for b in subjects[i + 1:]:
+            key = (a.code, b.code) if a.code < b.code else (b.code, a.code)
+            matrix[key] = _subjects_conflict(a, b)
+    return matrix
+
+
+def _precompute_mandatory_conflicts(
+    subjects: list[Subject],
+    mandatory_slots: dict[str, list[tuple[str, str]]],
+) -> dict[str, int]:
+    """Pre-compute mandatory conflict count for each subject."""
+    return {subj.code: _count_mandatory_conflicts(subj, mandatory_slots) for subj in subjects}
+
+
 def _score_combination(
     must_have: list[Subject],
     nice_to_have: list[Subject],
     fillers: list[Subject],
     mandatory_slots: dict[str, list[tuple[str, str]]],
     config: MatchConfig,
+    conflict_matrix: dict[tuple[str, str], list[str]] | None = None,
+    mandatory_conflict_cache: dict[str, int] | None = None,
 ) -> ScheduleCombination:
     """Score a candidate combination and return a ScheduleCombination."""
     all_subjects = must_have + nice_to_have + fillers
@@ -214,13 +264,21 @@ def _score_combination(
     internal_conflicts: list[tuple[str, str, str]] = []
     for i, a in enumerate(all_subjects):
         for b in all_subjects[i + 1:]:
-            for desc in _subjects_conflict(a, b):
+            key = (a.code, b.code) if a.code < b.code else (b.code, a.code)
+            if conflict_matrix is not None:
+                descs = conflict_matrix.get(key, [])
+            else:
+                descs = _subjects_conflict(a, b)
+            for desc in descs:
                 internal_conflicts.append((a.code, b.code, desc))
 
     # Mandatory slot conflicts
     mandatory_conflict_count = 0
     for subj in all_subjects:
-        mandatory_conflict_count += _count_mandatory_conflicts(subj, mandatory_slots)
+        if mandatory_conflict_cache is not None:
+            mandatory_conflict_count += mandatory_conflict_cache.get(subj.code, 0)
+        else:
+            mandatory_conflict_count += _count_mandatory_conflicts(subj, mandatory_slots)
 
     # Scoring
     score = 0.0
@@ -271,6 +329,7 @@ def find_best_combinations(
     subjects: dict[str, Subject],
     mandatory_subjects: dict[str, Subject],
     config: MatchConfig,
+    console: Console | None = None,
 ) -> list[ScheduleCombination]:
     """Find the best schedule combinations.
 
@@ -283,12 +342,49 @@ def find_best_combinations(
     config:
         User preferences including must_have_subjects, nice_to_have_subjects,
         max_electives, and max_combinations.
+    console:
+        Rich Console for progress output. If None, progress is suppressed.
     """
-    # Load and merge static courses (with semester date range from fetched subjects)
-    static_subjects, static_categories = _load_static_courses(config, subjects)
-    all_subjects = {**subjects, **static_subjects}
+    quiet = console is None
+    if quiet:
+        console = Console(quiet=True)
 
-    # Add static courses to must_have/nice_to_have based on their category
+    # ── Phase 1: Load static courses ──────────────────────────────────────
+    with console.status("[bold cyan]Loading static courses...", spinner="dots") as status:
+        static_subjects, static_categories = _load_static_courses(config, subjects)
+        all_subjects = {**subjects, **static_subjects}
+
+    if static_subjects:
+        # Show static course summary
+        static_table = Table(
+            title="[bold]Static Courses Loaded",
+            show_header=True,
+            header_style="bold",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+        static_table.add_column("Code", style="bold yellow")
+        static_table.add_column("Category")
+        static_table.add_column("Mode")
+        static_table.add_column("Lessons", justify="right")
+
+        for code, subj in static_subjects.items():
+            cat = static_categories.get(code, "?")
+            cat_style = "[green]must-have" if cat == "must_have" else "[blue]nice-to-have"
+            # Determine mode from the original static course
+            from .cache import StaticCourseCache
+            sc_cache = StaticCourseCache(cache_dir=str(Path(config.output_dir) / ".cache"))
+            raw_course = sc_cache.load_by_code(code)
+            if raw_course and raw_course.specific_dates is not None:
+                mode = f"[magenta]{len(raw_course.specific_dates)} dates"
+            else:
+                mode = "[dim]weekly"
+            static_table.add_row(code, cat_style, mode, str(subj.total_occurrences))
+
+        console.print(static_table)
+        console.print()
+
+    # ── Phase 2: Resolve categories ───────────────────────────────────────
     must_have_with_static = list(config.must_have_subjects)
     nice_to_have_with_static = list(config.nice_to_have_subjects)
 
@@ -300,7 +396,6 @@ def find_best_combinations(
 
     mandatory_slots = _build_mandatory_slots(mandatory_subjects)
 
-    # Resolve must-have and nice-to-have subjects
     must_have: list[Subject] = []
     for code in must_have_with_static:
         if code in all_subjects and code not in mandatory_subjects:
@@ -314,7 +409,7 @@ def find_best_combinations(
     must_have_codes = {s.code for s in must_have}
     nice_to_have_codes = {s.code for s in nice_to_have}
 
-    # Build candidate pool: uncategorized subjects (not mandatory, not must-have, not nice-to-have)
+    # Build candidate pool
     fillers: list[Subject] = []
     for code, subj in all_subjects.items():
         if code in mandatory_subjects:
@@ -322,6 +417,8 @@ def find_best_combinations(
         if code in must_have_codes or code in nice_to_have_codes:
             continue
         fillers.append(subj)
+
+    initial_filler_count = len(fillers)
 
     # Pre-filter: remove candidates conflicting with ALL must-haves
     if must_have:
@@ -332,45 +429,130 @@ def find_best_combinations(
             return True
         fillers = [f for f in fillers if not conflicts_with_all_must_have(f)]
 
-    # Sort by individual merit (fewer mandatory conflicts first)
     fillers.sort(key=lambda s: _count_mandatory_conflicts(s, mandatory_slots))
-
-    # Cap pool for performance
     fillers = fillers[:50]
 
-    # Remaining slots after must-haves
+    pruned_count = initial_filler_count - len(fillers)
+
+    # Show pool summary
+    pool_info = Text()
+    pool_info.append("  Must-have:    ", style="dim")
+    pool_info.append(f"{len(must_have)}", style="bold green")
+    pool_info.append("  Nice-to-have: ", style="dim")
+    pool_info.append(f"{len(nice_to_have)}", style="bold blue")
+    pool_info.append("  Candidates:   ", style="dim")
+    pool_info.append(f"{len(fillers)}", style="bold yellow")
+    if pruned_count > 0:
+        pool_info.append(f"  ({pruned_count} pruned)", style="dim red")
+    console.print(pool_info)
+
     remaining_slots = config.max_electives - len(must_have)
     if remaining_slots <= 0:
-        # Only must-haves fit — return single combination
         combo = _score_combination(must_have, [], [], mandatory_slots, config)
+        console.print("[dim]Only must-haves fit. Single combination returned.\n")
         return [combo]
 
-    # Build candidate pool: nice-to-have first, then fillers
     candidate_pool = nice_to_have + fillers
 
-    # Use a min-heap to track top-N combinations (by score)
-    # Heap entries: (score, index, combination) — index for tie-breaking
+    # ── Phase 3: Precompute conflicts ─────────────────────────────────────
+    all_scorable = must_have + candidate_pool
+    n_pairs = len(all_scorable) * (len(all_scorable) - 1) // 2
+
+    with console.status(
+        f"[bold cyan]Precomputing conflict matrix ({n_pairs} pairs)...",
+        spinner="dots",
+    ):
+        conflict_matrix = _precompute_conflict_matrix(all_scorable)
+        mandatory_conflict_cache = _precompute_mandatory_conflicts(all_scorable, mandatory_slots)
+
+    # Count conflict stats from the matrix
+    pairs_with_conflicts = sum(1 for v in conflict_matrix.values() if v)
+    total_conflicts_found = sum(len(v) for v in conflict_matrix.values())
+    disjoint_pairs = n_pairs - len(conflict_matrix)  # pairs skipped by quick-reject
+
+    conflict_info = Text()
+    conflict_info.append("  Pairs analyzed: ", style="dim")
+    conflict_info.append(f"{n_pairs}", style="bold")
+    conflict_info.append("  Conflicts found: ", style="dim")
+    conflict_info.append(f"{total_conflicts_found}", style="bold red" if total_conflicts_found else "bold green")
+    conflict_info.append("  Disjoint (fast skip): ", style="dim")
+    conflict_info.append(f"{disjoint_pairs}", style="bold cyan")
+    console.print(conflict_info)
+
+    # ── Phase 4: Enumerate and score combinations ─────────────────────────
     heap: list[tuple[float, int, ScheduleCombination]] = []
     counter = 0
 
-    # Enumerate subsets of size 1..remaining_slots from candidate_pool
     max_pool = min(len(candidate_pool), remaining_slots)
-    for size in range(0, max_pool + 1):
-        for subset in combinations(candidate_pool, size):
-            subset_nice = [s for s in subset if s.code in nice_to_have_codes]
-            subset_fillers = [s for s in subset if s.code not in nice_to_have_codes]
+    total_combos = sum(math.comb(len(candidate_pool), k) for k in range(0, max_pool + 1))
 
-            combo = _score_combination(
-                must_have, subset_nice, subset_fillers, mandatory_slots, config,
-            )
+    best_score = float("-inf")
+    conflict_free_count = 0
 
-            if len(heap) < config.max_combinations:
-                heapq.heappush(heap, (combo.score, counter, combo))
-            elif combo.score > heap[0][0]:
-                heapq.heapreplace(heap, (combo.score, counter, combo))
-            counter += 1
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(bar_width=30),
+        MofNCompleteColumn(),
+        TextColumn("[dim]{task.fields[info]}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(
+            "Scoring combinations",
+            total=total_combos,
+            info="",
+        )
 
-    # Extract and sort by score descending
+        for size in range(0, max_pool + 1):
+            for subset in combinations(candidate_pool, size):
+                subset_nice = [s for s in subset if s.code in nice_to_have_codes]
+                subset_fillers = [s for s in subset if s.code not in nice_to_have_codes]
+
+                combo = _score_combination(
+                    must_have, subset_nice, subset_fillers, mandatory_slots, config,
+                    conflict_matrix=conflict_matrix,
+                    mandatory_conflict_cache=mandatory_conflict_cache,
+                )
+
+                if not combo.internal_conflicts:
+                    conflict_free_count += 1
+
+                if len(heap) < config.max_combinations:
+                    heapq.heappush(heap, (combo.score, counter, combo))
+                elif combo.score > heap[0][0]:
+                    heapq.heapreplace(heap, (combo.score, counter, combo))
+
+                if combo.score > best_score:
+                    best_score = combo.score
+
+                counter += 1
+
+                # Update progress every 500 iterations to avoid overhead
+                if counter % 500 == 0 or counter == total_combos:
+                    progress.update(
+                        task,
+                        completed=counter,
+                        info=f"best: {best_score:.1f}  conflict-free: {conflict_free_count}",
+                    )
+
+        # Final update
+        progress.update(task, completed=total_combos)
+
+    # ── Summary ───────────────────────────────────────────────────────────
     results = [entry[2] for entry in heap]
     results.sort(key=lambda c: -c.score)
+
+    summary = Table.grid(padding=(0, 2))
+    summary.add_column(style="dim")
+    summary.add_column(style="bold")
+    summary.add_row("Combinations evaluated", f"{counter:,}")
+    summary.add_row("Conflict-free", f"{conflict_free_count:,}")
+    summary.add_row("Best score", f"{best_score:.1f}" if best_score > float("-inf") else "N/A")
+    summary.add_row("Returning top", f"{len(results)}")
+
+    console.print(Panel(summary, title="[bold green]Optimization Complete", border_style="green", padding=(0, 2)))
+    console.print()
+
     return results

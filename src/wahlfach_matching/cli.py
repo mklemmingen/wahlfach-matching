@@ -6,10 +6,14 @@ import argparse
 import sys
 from pathlib import Path
 
+from rich.console import Console
+
 from .config import MatchConfig
 from .ics_exporter import export_ics
 from .matcher import run_matching
 from .reporter import print_report, save_json_report
+
+console = Console()
 
 
 def parse_args(argv: list[str] | None = None) -> MatchConfig:
@@ -211,33 +215,33 @@ def _fetch_with_cache(config: MatchConfig, force_refetch: bool = False) -> dict[
     if config.use_cache and not force_refetch:
         cached = cache.load(config)
         if cached is not None:
-            print("Loaded timetable data from cache.")
+            console.print("[green]Loaded timetable data from cache.[/green]")
             return cached
 
     # Fetch fresh data
-    print("\nFetching timetable data...")
-    try:
-        timetables = fetch_timetables(config)
-        if not timetables:
-            raise RuntimeError("No timetable data fetched.")
+    with console.status("[bold cyan]Fetching timetable data from WebUntis...", spinner="dots"):
+        try:
+            timetables = fetch_timetables(config)
+            if not timetables:
+                raise RuntimeError("No timetable data fetched.")
 
-        subjects = aggregate_subjects(timetables)
+            subjects = aggregate_subjects(timetables)
 
-        # Save to cache for next time
-        if config.use_cache:
-            cache.save(config, subjects)
-            print("Timetable data cached.")
+            # Save to cache for next time
+            if config.use_cache:
+                cache.save(config, subjects)
+                console.print("[green]Timetable data cached.[/green]")
 
-        return subjects
+            return subjects
 
-    except Exception as e:
-        # Fallback to cache if fetch fails
-        if config.use_cache:
-            cached = cache.load(config)
-            if cached is not None:
-                print(f"\nFetch failed ({e}). Falling back to cached data.")
-                return cached
-        raise RuntimeError(f"Fetch failed and no cache available: {e}") from e
+        except Exception as e:
+            # Fallback to cache if fetch fails
+            if config.use_cache:
+                cached = cache.load(config)
+                if cached is not None:
+                    console.print(f"[yellow]Fetch failed ({e}). Falling back to cached data.[/yellow]")
+                    return cached
+            raise RuntimeError(f"Fetch failed and no cache available: {e}") from e
 
 
 def _run_combination_batch(config: MatchConfig, save_json: bool) -> int:
@@ -248,10 +252,10 @@ def _run_combination_batch(config: MatchConfig, save_json: bool) -> int:
     try:
         subjects = _fetch_with_cache(config)
     except RuntimeError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        console.print(f"[red]Error: {e}[/red]", file=sys.stderr)
         return 1
 
-    print(f"\nFound {len(subjects)} unique subjects.\n")
+    console.print(f"\nFound [bold]{len(subjects)}[/bold] unique subjects.\n")
 
     # Identify mandatory subjects and run optimizer
     from .optimizer import find_best_combinations
@@ -259,15 +263,15 @@ def _run_combination_batch(config: MatchConfig, save_json: bool) -> int:
     # Filter excluded subjects
     available = {k: v for k, v in subjects.items() if k not in config.excluded_subjects}
     mandatory = {code: available[code] for code in config.mandatory_subjects if code in available}
-    combinations = find_best_combinations(available, mandatory, config)
+    combinations = find_best_combinations(available, mandatory, config, console=console)
 
-    print_combination_report(combinations, config)
+    print_combination_report(combinations, config, console=console)
 
     # Always save MD results with UUID
     save_combination_md(combinations, config)
 
     if config.export_ics:
-        print("\nExporting combination ICS files...")
+        console.print("\n[cyan]Exporting combination ICS files...[/cyan]")
         export_combination_ics(combinations, config)
 
     if save_json:
@@ -389,10 +393,10 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
     try:
         subjects = _fetch_with_cache(config, force_refetch=force_refetch)
     except RuntimeError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        console.print(f"[red]Error: {e}[/red]", file=sys.stderr)
         return 1
 
-    print(f"\nFound {len(subjects)} unique subjects.\n")
+    console.print(f"\nFound [bold]{len(subjects)}[/bold] unique subjects.\n")
 
     mandatory = {code: subjects[code] for code in config.mandatory_subjects if code in subjects}
     subject_list = sorted(subjects.values(), key=lambda s: s.code)
@@ -425,13 +429,13 @@ def _run_interactive(config: MatchConfig, save_json: bool) -> int:
             code: subj for code, subj in subjects.items()
             if code not in config.excluded_subjects
         }
-        combinations = find_best_combinations(available_subjects, mandatory, config)
+        combinations = find_best_combinations(available_subjects, mandatory, config, console=console)
 
         if not combinations:
-            print("No valid combinations found.")
+            console.print("[yellow]No valid combinations found.[/yellow]")
             continue
 
-        print_combination_report(combinations, config)
+        print_combination_report(combinations, config, console=console)
 
         # Always save results as MD with UUID
         save_combination_md(combinations, config)

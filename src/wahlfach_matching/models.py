@@ -85,6 +85,9 @@ class ScheduleCombination:
     notes: list[str] = field(default_factory=list)
 
 
+WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
 @dataclass
 class StaticCourse:
     """A manually-added static course with fixed schedule."""
@@ -92,6 +95,7 @@ class StaticCourse:
     name: str  # full name (e.g., "Spanish 1 (Niveau A1.1)")
     category: str  # "must_have" or "nice_to_have"
     schedule: list[TimeSlot]  # list of weekday + time slots
+    specific_dates: list[date] | None = None  # None=weekly, []=no lessons, [dates]=only those dates
     semester: int | None = None  # optional context
     notes: str = ""  # optional notes
     created_at: datetime = field(default_factory=datetime.now)
@@ -103,34 +107,58 @@ class StaticCourse:
         return self.name or self.code
 
     def to_lessons(self, start_date: date | None = None, end_date: date | None = None) -> list[Lesson]:
-        """Convert static schedule to Lesson objects for entire semester duration.
+        """Convert static schedule to Lesson objects.
+
+        Behavior depends on ``specific_dates``:
+        - ``None`` → weekly expansion across [start_date, end_date] (or single week).
+        - Empty list → return ``[]`` (no lessons).
+        - Non-empty list → generate lessons only on those dates, matching each
+          date's weekday to the corresponding TimeSlots. ``start_date``/``end_date``
+          are ignored.
 
         Parameters
         ----------
-        start_date : date, optional
-            Start date of the semester. If None, uses a single representative week.
-        end_date : date, optional
-            End date of the semester. If None, uses a single representative week.
-
-        Returns
-        -------
-        list[Lesson]
-            Lesson objects for every occurrence of the schedule across the date range.
-            If no date range provided, returns lessons for a single representative week.
+        start_date, end_date : date, optional
+            Semester bounds (only used for weekly expansion when ``specific_dates is None``).
         """
         from datetime import timedelta
 
+        # --- Path 1: specific dates provided (block / irregular courses) ---
+        if self.specific_dates is not None:
+            if not self.specific_dates:
+                return []
+
+            # Build weekday → [TimeSlot, …] lookup
+            slots_by_weekday: dict[str, list[TimeSlot]] = {}
+            for slot in self.schedule:
+                slots_by_weekday.setdefault(slot.weekday, []).append(slot)
+
+            lessons: list[Lesson] = []
+            for d in self.specific_dates:
+                weekday_name = WEEKDAY_NAMES[d.weekday()]
+                for slot in slots_by_weekday.get(weekday_name, []):
+                    lessons.append(
+                        Lesson(
+                            date=d,
+                            weekday=weekday_name,
+                            start=slot.start,
+                            end=slot.end,
+                            room="",
+                            group="",
+                        )
+                    )
+            return lessons
+
+        # --- Path 2: no date range → single representative week ---
         if start_date is None or end_date is None:
-            # Fallback: single week behavior
             reference_date = date.today()
-            weekday_names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
             days_until_monday = (7 - reference_date.weekday()) % 7
             if days_until_monday > 0:
                 reference_date = reference_date + timedelta(days=days_until_monday)
 
             lessons = []
             for slot in self.schedule:
-                slot_weekday_idx = weekday_names.index(slot.weekday)
+                slot_weekday_idx = WEEKDAY_NAMES.index(slot.weekday)
                 lesson_date = reference_date + timedelta(days=slot_weekday_idx)
                 lessons.append(
                     Lesson(
@@ -144,23 +172,17 @@ class StaticCourse:
                 )
             return lessons
 
-        # Generate lessons for entire semester
-        weekday_names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+        # --- Path 3: weekly expansion across full semester ---
         lessons = []
-
-        # Iterate through each week in the semester
         current_date = start_date
         while current_date <= end_date:
-            # Find the Monday of this week
             days_since_monday = current_date.weekday()
             week_monday = current_date - timedelta(days=days_since_monday)
 
-            # Add all scheduled time slots for this week
             for slot in self.schedule:
-                slot_weekday_idx = weekday_names.index(slot.weekday)
+                slot_weekday_idx = WEEKDAY_NAMES.index(slot.weekday)
                 lesson_date = week_monday + timedelta(days=slot_weekday_idx)
 
-                # Only add if within semester range
                 if start_date <= lesson_date <= end_date:
                     lessons.append(
                         Lesson(
@@ -173,7 +195,6 @@ class StaticCourse:
                         )
                     )
 
-            # Move to next week
             current_date += timedelta(days=7)
 
         return lessons

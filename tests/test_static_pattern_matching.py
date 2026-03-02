@@ -10,10 +10,10 @@ from datetime import time
 import os
 
 # Create test directory
-os.makedirs('output/.cache', exist_ok=True)
+os.makedirs('../output/.cache', exist_ok=True)
 
 # Create test static courses
-cache = StaticCourseCache('output/.cache')
+cache = StaticCourseCache('../output/.cache')
 
 must_have_course = StaticCourse(
     code='TEST_MUST',

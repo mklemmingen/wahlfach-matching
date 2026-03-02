@@ -224,6 +224,11 @@ def _serialize_static_courses(courses: dict[str, StaticCourse]) -> dict:
                 }
                 for slot in course.schedule
             ],
+            "specific_dates": (
+                [d.isoformat() for d in course.specific_dates]
+                if course.specific_dates is not None
+                else None
+            ),
         }
     return result
 
@@ -240,6 +245,13 @@ def _deserialize_static_courses(raw: dict) -> dict[str, StaticCourse]:
             )
             for slot in data["schedule"]
         ]
+        raw_dates = data.get("specific_dates")
+        specific_dates: list[date] | None = (
+            [date.fromisoformat(d) for d in raw_dates]
+            if raw_dates is not None
+            else None
+        )
+
         courses[code] = StaticCourse(
             code=data["code"],
             name=data.get("name", ""),
@@ -248,6 +260,7 @@ def _deserialize_static_courses(raw: dict) -> dict[str, StaticCourse]:
             notes=data.get("notes", ""),
             created_at=datetime.fromisoformat(data.get("created_at", datetime.now().isoformat())),
             schedule=schedule,
+            specific_dates=specific_dates,
         )
     return courses
 

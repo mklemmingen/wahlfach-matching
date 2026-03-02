@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, time
 
 from InquirerPy import inquirer
 from InquirerPy.separator import Separator
 
-from .models import StaticCourse, Subject, TimeSlot
+from .models import WEEKDAY_NAMES, StaticCourse, Subject, TimeSlot
 
 AVAILABLE_PROGRAMS = ["MKIB", "WIB", "INB", "MEB", "UIB"]
 AVAILABLE_SEMESTERS = [1, 2, 3, 4, 5, 6, 7]
-AVAILABLE_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+AVAILABLE_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
 def select_programs() -> list[str]:
@@ -303,6 +303,19 @@ def add_static_course_interactive() -> StaticCourse:
         schedule.append(TimeSlot(weekday=weekday, start=start, end=end))
         print(f"✓ Added {weekday} {start:%H:%M}-{end:%H:%M}")
 
+    # Scheduling mode: weekly or specific dates
+    specific_dates: list[date] | None = None
+    schedule_mode = inquirer.select(
+        message="Scheduling mode:",
+        choices=[
+            {"name": "Weekly (repeats every week across the semester)", "value": "weekly"},
+            {"name": "Specific dates (block / irregular course)", "value": "specific"},
+        ],
+    ).execute()
+
+    if schedule_mode == "specific":
+        specific_dates = _collect_specific_dates(schedule)
+
     # Optional notes
     notes = ""
     if inquirer.confirm(
@@ -319,6 +332,7 @@ def add_static_course_interactive() -> StaticCourse:
         name=name,
         category=category_choice,
         schedule=schedule,
+        specific_dates=specific_dates,
         semester=semester,
         notes=notes,
     )
@@ -336,9 +350,18 @@ def list_static_courses_interactive(courses: list[StaticCourse]) -> None:
     for course in courses:
         category_badge = "MUST" if course.category == "must_have" else "⭐ NICE"
         sem_str = f" (Sem {course.semester})" if course.semester else ""
-        print(f"{category_badge:12} | {course.code:<15} | {course.name}{sem_str}")
+        if course.specific_dates is not None:
+            mode_str = f" [{len(course.specific_dates)} specific dates]"
+        else:
+            mode_str = " [weekly]"
+        print(f"{category_badge:12} | {course.code:<15} | {course.name}{sem_str}{mode_str}")
         for slot in course.schedule:
             print(f"{'':12} | {'':15} | → {slot.weekday} {slot.start:%H:%M}-{slot.end:%H:%M}")
+        if course.specific_dates:
+            dates_str = ", ".join(d.isoformat() for d in course.specific_dates[:5])
+            if len(course.specific_dates) > 5:
+                dates_str += f" (+{len(course.specific_dates) - 5} more)"
+            print(f"{'':12} | {'':15} | Dates: {dates_str}")
         if course.notes:
             print(f"{'':12} | {'':15} | Note: {course.notes}")
         print()
@@ -396,6 +419,45 @@ def select_course_to_remove(courses: list[StaticCourse]) -> str | None:
     return result if confirmed else None
 
 
+def _collect_specific_dates(schedule: list[TimeSlot]) -> list[date]:
+    """Interactively collect specific dates for a block/irregular course.
+
+    Validates that each date's weekday matches at least one TimeSlot in the schedule.
+    """
+    valid_weekdays = {slot.weekday for slot in schedule}
+    weekday_list = ", ".join(sorted(valid_weekdays))
+    print(f"\nEnter specific dates (weekday must match: {weekday_list}).")
+    print("Enter dates in YYYY-MM-DD format. Type 'done' to finish.\n")
+
+    dates: list[date] = []
+    while True:
+        raw = inquirer.text(
+            message=f"Date #{len(dates) + 1} (YYYY-MM-DD or 'done'):",
+            validate=lambda x: x.strip().lower() == "done" or _validate_date_format(x),
+            invalid_message="Invalid format. Use YYYY-MM-DD or 'done'.",
+        ).execute().strip()
+
+        if raw.lower() == "done":
+            if not dates:
+                print("Please enter at least one date.")
+                continue
+            break
+
+        d = date.fromisoformat(raw)
+        weekday_name = WEEKDAY_NAMES[d.weekday()]
+        if weekday_name not in valid_weekdays:
+            print(f"  {raw} is a {weekday_name} — no time slots for that day. Skipped.")
+            continue
+
+        dates.append(d)
+        matching_slots = [s for s in schedule if s.weekday == weekday_name]
+        slot_strs = ", ".join(f"{s.start:%H:%M}-{s.end:%H:%M}" for s in matching_slots)
+        print(f"  Added {raw} ({weekday_name}) — {slot_strs}")
+
+    dates.sort()
+    return dates
+
+
 def _validate_time_format(time_str: str) -> bool:
     """Validate that string is in HH:MM format."""
     try:
@@ -404,6 +466,15 @@ def _validate_time_format(time_str: str) -> bool:
             return False
         h, m = int(parts[0]), int(parts[1])
         return 0 <= h < 24 and 0 <= m < 60
+    except (ValueError, AttributeError):
+        return False
+
+
+def _validate_date_format(date_str: str) -> bool:
+    """Validate that string is in YYYY-MM-DD format."""
+    try:
+        date.fromisoformat(date_str.strip())
+        return True
     except (ValueError, AttributeError):
         return False
 

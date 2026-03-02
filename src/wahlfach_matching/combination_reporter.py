@@ -7,10 +7,16 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from rich.columns import Columns
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from .config import MatchConfig
 from .models import ScheduleCombination, Subject
 
-_WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+_WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 
 def _subject_schedule_summary(subj: Subject) -> str:
@@ -35,71 +41,119 @@ def _free_day_names(free_count: int, subjects: list[Subject]) -> str:
 def print_combination_report(
     combinations: list[ScheduleCombination],
     config: MatchConfig,
+    console: Console | None = None,
 ) -> None:
-    """Print a structured text report of schedule combinations."""
-    print("=" * 70)
-    print("SCHEDULE COMBINATION RESULTS")
-    print("=" * 70)
+    """Print a structured rich report of schedule combinations."""
+    if console is None:
+        console = Console()
 
-    # Show filtering summary at the top
+    # Header
+    header = Text()
+    header.append("SCHEDULE COMBINATION RESULTS", style="bold white")
+    console.print(Panel(header, border_style="bright_blue", padding=(0, 2)))
+
+    # Filter summary
+    filter_grid = Table.grid(padding=(0, 2))
+    filter_grid.add_column(style="dim")
+    filter_grid.add_column()
     if config.excluded_subjects:
-        print(f"Excluded:     {', '.join(config.excluded_subjects)}")
+        filter_grid.add_row("Excluded:", ", ".join(config.excluded_subjects))
     if config.must_have_subjects:
-        print(f"Must-have:    {', '.join(config.must_have_subjects)}")
+        filter_grid.add_row("Must-have:", "[green]" + ", ".join(config.must_have_subjects) + "[/green]")
     if config.nice_to_have_subjects:
-        print(f"Nice-to-have: {', '.join(config.nice_to_have_subjects)}")
+        filter_grid.add_row("Nice-to-have:", "[blue]" + ", ".join(config.nice_to_have_subjects) + "[/blue]")
+    console.print(filter_grid)
 
-    print(f"\nFound {len(combinations)} combination(s)\n")
+    console.print(f"\nFound [bold]{len(combinations)}[/bold] combination(s)\n")
 
     for i, combo in enumerate(combinations, 1):
         m = combo.metrics
-        print(f"Combination #{i}   Score: {combo.score}")
-        print(f"\u2500\u2500 Ratings \u2500" + "\u2500" * 40)
-        print(f"  Closeness (avg gap):    {m.closeness:.0f} min")
-        print(f"  Earliest start:         {m.earliest_start}")
-        print(f"  Average day start:      {m.avg_start}")
-        print(f"  Latest end:             {m.latest_end}")
-        print(f"  Average day end:        {m.avg_end}")
-        print(f"  Free days per week:     {_free_day_names(m.free_days_per_week, combo.subjects)}")
-        print(f"\u2500\u2500 Subjects \u2500" + "\u2500" * 39)
+
+        # ── Ratings table ─────────────────────────────────────
+        ratings = Table.grid(padding=(0, 2))
+        ratings.add_column(style="dim", min_width=22)
+        ratings.add_column(style="bold")
+        ratings.add_row("Closeness (avg gap)", f"{m.closeness:.0f} min")
+        ratings.add_row("Earliest start", m.earliest_start)
+        ratings.add_row("Average day start", m.avg_start)
+        ratings.add_row("Latest end", m.latest_end)
+        ratings.add_row("Average day end", m.avg_end)
+        ratings.add_row("Free days/week", _free_day_names(m.free_days_per_week, combo.subjects))
+
+        # ── Subjects table ────────────────────────────────────
+        subj_table = Table(
+            show_header=True,
+            header_style="bold",
+            border_style="dim",
+            padding=(0, 1),
+            expand=True,
+        )
+        subj_table.add_column("Tier", width=10)
+        subj_table.add_column("Code", style="bold yellow", width=12)
+        subj_table.add_column("Name", ratio=2)
+        subj_table.add_column("Schedule")
+        subj_table.add_column("Lessons", justify="right", width=7)
+        subj_table.add_column("Teacher(s)", style="dim")
 
         for subj in combo.must_have_subjects:
             sched = _subject_schedule_summary(subj)
             teachers = ", ".join(sorted(subj.teachers)) if subj.teachers else ""
-            print(f"  [MUST]      {subj.code:<10s} {subj.display_name:<25s} {sched}")
-            if teachers:
-                print(f"              {'':10s} {'':25s} Teacher(s): {teachers}")
-
+            subj_table.add_row(
+                "[bold green]MUST",
+                subj.code, subj.display_name, sched,
+                str(subj.total_occurrences), teachers,
+            )
         for subj in combo.nice_to_have_subjects:
             sched = _subject_schedule_summary(subj)
             teachers = ", ".join(sorted(subj.teachers)) if subj.teachers else ""
-            print(f"  [NICE]      {subj.code:<10s} {subj.display_name:<25s} {sched}")
-            if teachers:
-                print(f"              {'':10s} {'':25s} Teacher(s): {teachers}")
-
+            subj_table.add_row(
+                "[bold blue]NICE",
+                subj.code, subj.display_name, sched,
+                str(subj.total_occurrences), teachers,
+            )
         for subj in combo.filler_subjects:
             sched = _subject_schedule_summary(subj)
             teachers = ", ".join(sorted(subj.teachers)) if subj.teachers else ""
-            print(f"  [COULD FIT] {subj.code:<10s} {subj.display_name:<25s} {sched}")
-            if teachers:
-                print(f"              {'':10s} {'':25s} Teacher(s): {teachers}")
+            subj_table.add_row(
+                "[dim]COULD FIT",
+                subj.code, subj.display_name, sched,
+                str(subj.total_occurrences), teachers,
+            )
 
-        # Show which nice-to-haves didn't make it into this combination
+        # ── Build the combo panel content ─────────────────────
+        parts: list = [ratings, "", subj_table]
+
+        # Missing nice-to-haves
         included_nice_codes = {s.code for s in combo.nice_to_have_subjects}
         missing_nice = [c for c in config.nice_to_have_subjects if c not in included_nice_codes]
         if missing_nice:
-            print(f"\u2500\u2500 Not included \u2500" + "\u2500" * 35)
-            print(f"  Nice-to-have not in this combo: {', '.join(missing_nice)}")
+            parts.append(Text(f"  Missing nice-to-haves: {', '.join(missing_nice)}", style="dim italic"))
 
+        # Conflicts
         if combo.internal_conflicts:
-            print(f"\u2500\u2500 Conflicts \u2500" + "\u2500" * 38)
-            for a_code, b_code, desc in combo.internal_conflicts:
-                print(f"  {desc}")
+            conflict_text = Text()
+            conflict_text.append(f"  {len(combo.internal_conflicts)} conflict(s):\n", style="bold red")
+            for _, _, desc in combo.internal_conflicts:
+                conflict_text.append(f"    {desc}\n", style="red")
+            parts.append(conflict_text)
 
+        # Notes
         if combo.notes:
-            print(f"  Notes: {'; '.join(combo.notes)}")
+            parts.append(Text(f"  {'; '.join(combo.notes)}", style="dim"))
 
-        print()
+        # Score badge
+        score_style = "bold green" if combo.score > 0 else "bold red"
+        title = f"[bold]#{i}[/bold]  Score: [{score_style}]{combo.score}[/{score_style}]"
+
+        # Wrap everything in a panel
+        from rich.console import Group
+        console.print(Panel(
+            Group(*parts),
+            title=title,
+            border_style="bright_blue" if i == 1 else "blue",
+            padding=(0, 1),
+        ))
+        console.print()
 
 
 def save_combination_json(
