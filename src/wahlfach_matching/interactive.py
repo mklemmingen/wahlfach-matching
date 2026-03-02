@@ -117,15 +117,15 @@ def confirm_and_configure(
     # Get max_combinations using text input with validation
     while True:
         max_combinations_str = inquirer.text(
-            message="How many top combinations to show (1-20):",
+            message="How many top combinations to show (1-50):",
             default="5",
             validate=lambda x: x.isdigit() or "Please enter a valid number",
             invalid_message="Please enter a valid number",
         ).execute().strip()
         max_combinations = int(max_combinations_str)
-        if 1 <= max_combinations <= 20:
+        if 1 <= max_combinations <= 50:
             break
-        print("⚠ Must be between 1 and 20")
+        print("⚠ Must be between 1 and 50")
 
     confirmed = inquirer.confirm(
         message="Proceed with these settings?",

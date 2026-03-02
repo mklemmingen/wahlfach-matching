@@ -141,6 +141,16 @@ def _minutes_to_timestr(minutes: int) -> str:
     return f"{h:02d}:{m:02d}"
 
 
+def _compute_lesson_slots_45(subject: Subject) -> float:
+    """Count total 45-minute equivalent lesson slots for a subject across the semester."""
+    total_minutes = 0
+    for le in subject.lessons:
+        start_min = le.start.hour * 60 + le.start.minute
+        end_min = le.end.hour * 60 + le.end.minute
+        total_minutes += max(0, end_min - start_min)
+    return total_minutes / 45.0
+
+
 def _compute_metrics(subjects: list[Subject]) -> CombinationMetrics:
     """Compute all quality-of-life metrics for a set of subjects."""
     all_lessons: list[Lesson] = []
@@ -254,6 +264,8 @@ def _score_combination(
     config: MatchConfig,
     conflict_matrix: dict[tuple[str, str], list[str]] | None = None,
     mandatory_conflict_cache: dict[str, int] | None = None,
+    slots_45_cache: dict[str, float] | None = None,
+    max_slots_45: float = 0.0,
 ) -> ScheduleCombination:
     """Score a candidate combination and return a ScheduleCombination."""
     all_subjects = must_have + nice_to_have + fillers
@@ -282,15 +294,43 @@ def _score_combination(
     score = 0.0
     notes: list[str] = []
 
-    # Nice-to-have bonus
-    score += len(nice_to_have) * 10.0
+    # Nice-to-have bonus (per-subject weighted)
+    nth_total = 0.0
+    for subj in nice_to_have:
+        nth_total += 10.0 * config.subject_weights.get(subj.code, 1.0)
+    score += nth_total
     if nice_to_have:
         notes.append(f"{len(nice_to_have)} nice-to-have(s) included")
 
-    # Filler bonus (smaller)
-    score += len(fillers) * 3.0
+    # Filler bonus (per-subject weighted)
+    filler_total = 0.0
+    for subj in fillers:
+        filler_total += 3.0 * config.subject_weights.get(subj.code, 1.0)
+    score += filler_total
     if fillers:
         notes.append(f"{len(fillers)} filler(s) included")
+
+    # Note any active weight overrides
+    weighted_notes = []
+    for subj in all_subjects:
+        w = config.subject_weights.get(subj.code)
+        if w is not None and w != 1.0:
+            weighted_notes.append(f"{subj.code} x{w:g}")
+    if weighted_notes:
+        notes.append(f"weighted: {', '.join(weighted_notes)}")
+
+    # Light-class bonus: reward subjects with fewer 45-min lesson slots.
+    # Capped at 2.0 per subject (always < filler inclusion bonus of 3.0),
+    # so adding any class is always net-positive regardless of weight.
+    if max_slots_45 > 0:
+        light_total = 0.0
+        for subj in all_subjects:
+            slots = slots_45_cache[subj.code] if slots_45_cache else _compute_lesson_slots_45(subj)
+            light_total += 2.0 * (1.0 - slots / max_slots_45)
+        light_total = max(0.0, light_total)
+        score += light_total
+        if light_total > 0:
+            notes.append(f"light-class bonus +{light_total:.1f}")
 
     # Penalty for internal conflicts
     score -= len(internal_conflicts) * 5.0
@@ -308,6 +348,16 @@ def _score_combination(
     if metrics.closeness > 0:
         # Reward compact schedules (lower gap = higher score)
         score += max(0, 5.0 - metrics.closeness / 30.0)
+
+    # Spread-across-week bonus (optional)
+    if config.spread_across_week:
+        all_lessons: list[Lesson] = []
+        for subj in all_subjects:
+            all_lessons.extend(subj.lessons)
+        occupied = len({le.weekday for le in all_lessons}) if all_lessons else 0
+        spread_bonus = 3.0 * occupied
+        score += spread_bonus
+        notes.append(f"spread bonus +{spread_bonus:.1f} ({occupied} weekdays)")
 
     return ScheduleCombination(
         subjects=all_subjects,
@@ -420,6 +470,11 @@ def find_best_combinations(
         elif category == "nice_to_have" and code not in nice_to_have_with_static:
             nice_to_have_with_static.append(code)
 
+    # Warn about --weight codes not found in available subjects
+    for code in config.subject_weights:
+        if code not in all_subjects:
+            console.print(f"[yellow]Warning: --weight code '{code}' not found in subjects, ignoring.[/yellow]")
+
     mandatory_slots = _build_mandatory_slots(mandatory_subjects)
 
     must_have: list[Subject] = []
@@ -502,7 +557,12 @@ def find_best_combinations(
 
     remaining_slots = config.max_electives - len(must_have)
     if remaining_slots <= 0:
-        combo = _score_combination(must_have, [], [], mandatory_slots, config)
+        mh_slots_cache = {s.code: _compute_lesson_slots_45(s) for s in must_have}
+        mh_max_slots = max(mh_slots_cache.values()) if mh_slots_cache else 0.0
+        combo = _score_combination(
+            must_have, [], [], mandatory_slots, config,
+            slots_45_cache=mh_slots_cache, max_slots_45=mh_max_slots,
+        )
         console.print("Only must-haves fit. Single combination returned.")
         return [combo]
 
@@ -515,6 +575,8 @@ def find_best_combinations(
     with console.status(f"Precomputing conflict matrix ({n_pairs} pairs)...", spinner="dots"):
         conflict_matrix = _precompute_conflict_matrix(all_scorable)
         mandatory_conflict_cache = _precompute_mandatory_conflicts(all_scorable, mandatory_slots)
+        slots_45_cache = {subj.code: _compute_lesson_slots_45(subj) for subj in all_scorable}
+        max_slots_45 = max(slots_45_cache.values()) if slots_45_cache else 0.0
 
     total_conflicts_found = sum(len(v) for v in conflict_matrix.values())
     disjoint_pairs = n_pairs - len(conflict_matrix)
@@ -566,6 +628,8 @@ def find_best_combinations(
                     must_have, subset_nice, subset_fillers, mandatory_slots, config,
                     conflict_matrix=conflict_matrix,
                     mandatory_conflict_cache=mandatory_conflict_cache,
+                    slots_45_cache=slots_45_cache,
+                    max_slots_45=max_slots_45,
                 )
 
                 if not combo.internal_conflicts:

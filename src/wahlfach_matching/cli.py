@@ -119,6 +119,21 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         help="Define a mutual-exclusion group (repeatable). Courses in the same group won't appear together.",
     )
 
+    # Scoring flags
+    parser.add_argument(
+        "--weight",
+        action="append",
+        default=[],
+        metavar="CODE:MULTIPLIER",
+        help="Boost a subject's score by multiplier (repeatable, e.g. --weight MATH:2.0)",
+    )
+    parser.add_argument(
+        "--spread-across-week",
+        action="store_true",
+        default=False,
+        help="Reward schedules that spread classes across more weekdays",
+    )
+
     # Cache flags
     parser.add_argument(
         "--no-cache",
@@ -175,6 +190,23 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         else:
             exclusion_groups[name] = codes
 
+    # Parse --weight CODE:MULTIPLIER into dict
+    subject_weights: dict[str, float] = {}
+    for raw in (args.weight or []):
+        if ":" not in raw:
+            parser.error(f"Invalid --weight format: '{raw}'. Expected CODE:MULTIPLIER (e.g. MATH:2.0)")
+        code, mult_str = raw.split(":", 1)
+        code = code.strip()
+        if not code:
+            parser.error(f"Invalid --weight: '{raw}'. Code must not be empty.")
+        try:
+            mult = float(mult_str)
+        except ValueError:
+            parser.error(f"Invalid --weight multiplier: '{mult_str}' is not a number.")
+        if mult <= 0:
+            parser.error(f"Invalid --weight multiplier: {mult} must be positive.")
+        subject_weights[code] = mult
+
     return MatchConfig(
         programs=args.programs,
         semesters=args.semesters,
@@ -191,6 +223,8 @@ def parse_args(argv: list[str] | None = None) -> MatchConfig:
         max_electives=args.max_electives,
         excluded_subjects=args.exclude or [],
         exclusion_groups=exclusion_groups,
+        subject_weights=subject_weights,
+        spread_across_week=args.spread_across_week,
         use_cache=not args.no_cache,
         cache_ttl_hours=args.cache_ttl,
         remove_course=args.remove_course,

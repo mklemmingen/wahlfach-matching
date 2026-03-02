@@ -44,6 +44,11 @@ class MatchConfig:
     # Mutual-exclusion groups: group name -> list of subject codes
     exclusion_groups: dict[str, list[str]] = field(default_factory=dict)
 
+    # Per-subject weight multipliers: CODE -> multiplier
+    subject_weights: dict[str, float] = field(default_factory=dict)
+    # Reward schedules that spread classes across more weekdays
+    spread_across_week: bool = False
+
     # Cache
     use_cache: bool = True
     cache_ttl_hours: int = 24
