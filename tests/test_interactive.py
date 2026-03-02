@@ -73,9 +73,10 @@ class TestCategorizeSubjects:
 class TestConfirmAndConfigure:
     @patch("wahlfach_matching.interactive.inquirer")
     def test_confirmed(self, mock_inquirer):
-        mock_number = MagicMock()
-        mock_number.execute.side_effect = [6, 5]
-        mock_inquirer.number.return_value = mock_number
+        # confirm_and_configure uses inquirer.text (not .number) for both inputs
+        mock_text = MagicMock()
+        mock_text.execute.return_value.strip.side_effect = ["6", "5"]
+        mock_inquirer.text.return_value = mock_text
 
         mock_confirm = MagicMock()
         mock_confirm.execute.return_value = True
@@ -89,9 +90,9 @@ class TestConfirmAndConfigure:
 
     @patch("wahlfach_matching.interactive.inquirer")
     def test_cancelled(self, mock_inquirer):
-        mock_number = MagicMock()
-        mock_number.execute.return_value = 6
-        mock_inquirer.number.return_value = mock_number
+        mock_text = MagicMock()
+        mock_text.execute.return_value.strip.side_effect = ["6", "5"]
+        mock_inquirer.text.return_value = mock_text
 
         mock_confirm = MagicMock()
         mock_confirm.execute.return_value = False
