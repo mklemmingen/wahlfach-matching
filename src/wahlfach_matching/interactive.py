@@ -250,6 +250,7 @@ def add_static_course_interactive() -> StaticCourse:
         choices=[
             {"name": "Must-have (always in every combination)", "value": "must_have"},
             {"name": "Nice-to-have (preferred but optional)", "value": "nice_to_have"},
+            {"name": "Filler (only used to fill gaps)", "value": ""},
         ],
     ).execute()
 
@@ -361,7 +362,12 @@ def list_static_courses_interactive(courses: list[StaticCourse]) -> None:
 
     print("\n=== Static Courses ===\n")
     for course in courses:
-        category_badge = "MUST" if course.category == "must_have" else "⭐ NICE"
+        if course.category == "must_have":
+            category_badge = "MUST"
+        elif course.category == "nice_to_have":
+            category_badge = "NICE"
+        else:
+            category_badge = "FILLER"
         sem_str = f" (Sem {course.semester})" if course.semester else ""
         if course.specific_dates is not None:
             mode_str = f" [{len(course.specific_dates)} specific dates]"

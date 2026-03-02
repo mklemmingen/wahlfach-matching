@@ -409,7 +409,12 @@ def find_best_combinations(
 
         for code, subj in static_subjects.items():
             cat = static_categories.get(code, "?")
-            cat_style = "[green]must-have" if cat == "must_have" else "[blue]nice-to-have"
+            if cat == "must_have":
+                cat_style = "[green]must-have"
+            elif cat == "nice_to_have":
+                cat_style = "[blue]nice-to-have"
+            else:
+                cat_style = "[dim]filler"
             # Determine mode from the original static course
             from .cache import StaticCourseCache
             sc_cache = StaticCourseCache(cache_dir=str(Path(config.output_dir) / ".cache"))
